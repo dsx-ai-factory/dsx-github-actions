@@ -1,2 +1,11 @@
 # Default code owners for dsx-github-actions
-* @mmou-nv @huaweic-nv @abegnoche @lachen-nv
+#
+# Post-transfer to dsx-ai-factory: code owners resolve via the org team
+# (IdP-synced from the access-dsx-owner DL) instead of individuals, so
+# ownership survives the org move without per-person maintenance.
+#
+# DO NOT MERGE until AFTER the SCM transfer to dsx-ai-factory lands:
+#   - while the repo is still under NVIDIA, @dsx-ai-factory/... will not resolve
+#   - after cutover, also grant the team write+ on the repo and keep
+#     "Require review from Code Owners" enabled in the branch ruleset
+* @dsx-ai-factory/dsx-sw-admins
