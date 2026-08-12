@@ -163,7 +163,7 @@ runs:
     - name: Security scan (SBOM + Grype)
       if: inputs.security-scan-enabled == 'true'
       id: secscan
-      uses: NVIDIA/dsx-github-actions/.github/actions/security-container-scan@d8d304286ba834f32ff672d5c90782f2bbab4aea
+      uses: dsx-ai-factory/dsx-github-actions/.github/actions/security-container-scan@d8d304286ba834f32ff672d5c90782f2bbab4aea
       with:
         image: ${{ steps.scan_vars.outputs.scan_image }}
         fail-on: critical
