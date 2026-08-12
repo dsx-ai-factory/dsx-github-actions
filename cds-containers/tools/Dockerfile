@@ -35,10 +35,17 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js 24 LTS
-RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+# Install Node.js 24 LTS from the signed NodeSource repository. Pin the signing
+# key identity instead of executing the remote setup script.
+ARG NODESOURCE_GPG_FINGERPRINT="6F71F525282841EEDAF851B42F59B5F99B1BE0B4"
+RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o /tmp/nodesource-repo.gpg.key \
+    && test "$(gpg --batch --show-keys --with-colons /tmp/nodesource-repo.gpg.key | awk -F: '$1 == "fpr" { print $10; exit }')" = "$NODESOURCE_GPG_FINGERPRINT" \
+    && gpg --batch --yes --dearmor -o /usr/share/keyrings/nodesource.gpg /tmp/nodesource-repo.gpg.key \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
+    && rm /tmp/nodesource-repo.gpg.key \
     && apt-get update \
     && apt-get install --no-install-recommends -y nodejs \
+    && rm -rf /var/lib/apt/lists/* \
     && node --version \
     && npm --version
 
@@ -68,7 +75,9 @@ RUN curl -fsSL -o yq "https://github.com/mikefarah/yq/releases/download/v${YQ_VE
 
 # ngccli
 ARG NGCCLI_VERSION="4.17.0"
-RUN curl -sSL -O "https://api.ngc.nvidia.com/v2/resources/nvidia/ngc-apps/ngc_cli/versions/${NGCCLI_VERSION}/files/ngccli_linux.zip" \
+ARG NGCCLI_SHA256="43a28b1b004c07c8e2db08595b3d5b9d4ddc496e81ef1f6b25eca8d3c79fedc6"
+RUN curl -fsSL -o ngccli_linux.zip "https://api.ngc.nvidia.com/v2/resources/nvidia/ngc-apps/ngc_cli/versions/${NGCCLI_VERSION}/files/ngccli_linux.zip" \
+    && printf '%s  %s\n' "$NGCCLI_SHA256" ngccli_linux.zip | sha256sum -c - \
     && unzip ngccli_linux.zip \
     && rm ngccli_linux.zip \
     && ln -s /ngc-cli/ngc /usr/local/bin/ngc \
@@ -104,9 +113,13 @@ RUN curl -fsSL -o regctl "https://github.com/regclient/regclient/releases/downlo
     && regctl version
 
 # helm
-ENV VERIFY_CHECKSUM=true \
-    VERIFY_SIGNATURES=false
-RUN curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash \
+ARG HELM_VERSION="4.2.3"
+ARG HELM_SHA256="e9b88b4ee95b18c706839c28d3a0220e5bc470e9cd9262410c90793c45ff8b7c"
+RUN curl -fsSL -o helm.tar.gz "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz" \
+    && printf '%s  %s\n' "$HELM_SHA256" helm.tar.gz | sha256sum -c - \
+    && tar -xzf helm.tar.gz linux-amd64/helm \
+    && mv linux-amd64/helm /usr/local/bin/helm \
+    && rm -rf helm.tar.gz linux-amd64 \
     && helm version
 
 # terraform

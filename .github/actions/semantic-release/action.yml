@@ -112,18 +112,24 @@ runs:
     - name: Display Release Info
       if: steps.semantic.outputs.new_release_published == 'true'
       shell: bash
+      env:
+        RELEASE_VERSION: ${{ steps.semantic.outputs.new_release_version }}
+        RELEASE_TAG: ${{ steps.semantic.outputs.new_release_git_tag }}
+        RELEASE_NOTES: ${{ steps.semantic.outputs.new_release_notes }}
       run: |
         echo "🎉 New Release Published!"
-        echo "📦 Version: ${{ steps.semantic.outputs.new_release_version }}"
-        echo "🏷️ Tag: ${{ steps.semantic.outputs.new_release_git_tag }}"
+        printf '📦 Version: %s\n' "$RELEASE_VERSION"
+        printf '🏷️ Tag: %s\n' "$RELEASE_TAG"
         echo "📝 Release Notes:"
-        echo "${{ steps.semantic.outputs.new_release_notes }}"
+        printf '%s\n' "$RELEASE_NOTES"
 
     - name: No Release Info
       if: steps.semantic.outputs.new_release_published != 'true'
       shell: bash
+      env:
+        LAST_RELEASE_VERSION: ${{ steps.semantic.outputs.last_release_version }}
       run: |
         echo "ℹ️ No new release created"
-        if [ -n "${{ steps.semantic.outputs.last_release_version }}" ]; then
-          echo "📌 Last release: ${{ steps.semantic.outputs.last_release_version }}"
+        if [ -n "$LAST_RELEASE_VERSION" ]; then
+          printf '📌 Last release: %s\n' "$LAST_RELEASE_VERSION"
         fi

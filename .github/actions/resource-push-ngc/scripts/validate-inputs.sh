@@ -38,6 +38,24 @@ require_non_empty() {
   fi
 }
 
+# GitHub environment files use a delimiter for multiline values. A unique
+# delimiter keeps embedded newlines from being interpreted as new variables.
+write_env() {
+  local name=$1
+  local value=$2
+  local delimiter="ghadelimiter_${RANDOM}_${RANDOM}_$$"
+
+  while grep -Fqx -- "$delimiter" <<< "$value"; do
+    delimiter="ghadelimiter_${RANDOM}_${RANDOM}_$$"
+  done
+
+  {
+    printf '%s<<%s\n' "$name" "$delimiter"
+    printf '%s\n' "$value"
+    printf '%s\n' "$delimiter"
+  } >> "$GITHUB_ENV"
+}
+
 CC_RESOURCE_NAME=${INPUT_NAME:-}
 if [[ -n ${RESOURCE_NAME:-} ]]; then
   info "Reading name from RESOURCE_NAME"
@@ -148,17 +166,15 @@ Resource NGC Force: $CC_RESOURCE_NGC_FORCE
 Resource NGC Path: $CC_RESOURCE_NGC_PATH
 SUMMARY
 
-{
-  echo "CC_RESOURCE_NAME=$CC_RESOURCE_NAME"
-  echo "CC_RESOURCE_DISPLAY_NAME=$CC_RESOURCE_DISPLAY_NAME"
-  echo "CC_RESOURCE_DESCRIPTION=$CC_RESOURCE_DESCRIPTION"
-  echo "CC_RESOURCE_PATH=$CC_RESOURCE_PATH"
-  echo "CC_RESOURCE_VERSION=$CC_RESOURCE_VERSION"
-  echo "CC_RESOURCE_FORMAT=$CC_RESOURCE_FORMAT"
-  echo "CC_RESOURCE_APPLICATION=$CC_RESOURCE_APPLICATION"
-  echo "CC_RESOURCE_FRAMEWORK=$CC_RESOURCE_FRAMEWORK"
-  echo "CC_RESOURCE_PRECISION=$CC_RESOURCE_PRECISION"
-  echo "CC_RESOURCE_NGC_FORCE=$CC_RESOURCE_NGC_FORCE"
-  echo "CC_RESOURCE_NGC_PATH=$CC_RESOURCE_NGC_PATH"
-  echo "CC_RESOURCE_NGC_KEY=$CC_RESOURCE_NGC_KEY"
-} >> "$GITHUB_ENV"
+write_env CC_RESOURCE_NAME "$CC_RESOURCE_NAME"
+write_env CC_RESOURCE_DISPLAY_NAME "$CC_RESOURCE_DISPLAY_NAME"
+write_env CC_RESOURCE_DESCRIPTION "$CC_RESOURCE_DESCRIPTION"
+write_env CC_RESOURCE_PATH "$CC_RESOURCE_PATH"
+write_env CC_RESOURCE_VERSION "$CC_RESOURCE_VERSION"
+write_env CC_RESOURCE_FORMAT "$CC_RESOURCE_FORMAT"
+write_env CC_RESOURCE_APPLICATION "$CC_RESOURCE_APPLICATION"
+write_env CC_RESOURCE_FRAMEWORK "$CC_RESOURCE_FRAMEWORK"
+write_env CC_RESOURCE_PRECISION "$CC_RESOURCE_PRECISION"
+write_env CC_RESOURCE_NGC_FORCE "$CC_RESOURCE_NGC_FORCE"
+write_env CC_RESOURCE_NGC_PATH "$CC_RESOURCE_NGC_PATH"
+write_env CC_RESOURCE_NGC_KEY "$CC_RESOURCE_NGC_KEY"

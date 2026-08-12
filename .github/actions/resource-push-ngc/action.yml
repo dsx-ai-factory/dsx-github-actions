@@ -68,6 +68,10 @@ inputs:
     description: "NGC CLI version to install"
     default: "4.9.17"
     required: false
+  ngccli-sha256:
+    description: "Expected SHA256 for a non-default NGC CLI version on the runner architecture"
+    default: ""
+    required: false
 outputs:
   resource-id:
     description: "Fully qualified resource identifier"
@@ -88,6 +92,7 @@ runs:
         "$GITHUB_ACTION_PATH"/scripts/install-ngc-cli.sh
       env:
         NGCCLI_VERSION: ${{ inputs.ngccli-version }}
+        NGCCLI_SHA256: ${{ inputs.ngccli-sha256 }}
     - name: Validate inputs
       shell: bash
       run: |

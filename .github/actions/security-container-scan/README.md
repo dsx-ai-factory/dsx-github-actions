@@ -121,7 +121,7 @@ steps:
 | `image`              | Local container image reference to scan (must exist on the runner).                                                           | Yes      | —                            |
 | `fail-on`            | Minimum Grype severity that counts as a failure. One of `negligible`, `low`, `medium`, `high`, `critical`.                    | No       | `high`                       |
 | `fail-build`         | If `true`, fail the step when Grype finds vulnerabilities at/above `fail-on` or when SBOM/scan prerequisites fail.            | No       | `false`                      |
-| `grype-image`        | Grype container image to use for scanning. Override to pin to a specific digest for supply-chain hardening.                   | No       | `anchore/grype:latest`       |
+| `grype-image`        | Grype container image to use for scanning. Update the version and multi-architecture digest together.                         | No       | `anchore/grype:v0.117.0@sha256:ddf9e9f204049f3a4a0955ef70873cabab6a31432125ad4f20a490b54950a253` |
 | `report-json`        | Filename for the JSON report.                                                                                                 | No       | `grype-results.json`         |
 | `report-sarif`       | Filename for the SARIF report.                                                                                                | No       | `grype-results.sarif`        |
 | `report-table`       | Filename for the human-readable table report (always generated).                                                              | No       | `grype-results.txt`          |
@@ -148,7 +148,7 @@ steps:
 
 - **Step summary is count-only**: the `$GITHUB_STEP_SUMMARY` output shows total matches and Critical/High/Medium/Low counts, but does **not** list individual CVE IDs or affected packages. On public repositories, run summaries are world-readable, and publishing a list of unresolved CVEs + package versions amounts to handing attackers a roadmap. Per-CVE detail is available in the JSON/SARIF/table artifact (collaborators only) or, when `upload-sarif: true`, in the Security tab.
 - **Three artifact formats**: each scan produces JSON (Grype-native, used by tooling and `jq` drill-down), SARIF (GitHub code scanning / IDE viewers), and a plain-text table (drop-in readable for reviewers who don't want to touch `jq`). All three are bundled into the same workflow artifact.
-- **Supply chain**: `grype-image` defaults to `anchore/grype:latest` for ease of adoption and DB freshness. For hardened pipelines, override it to a specific digest (`anchore/grype@sha256:...`) and refresh periodically.
+- **Supply chain**: `grype-image` defaults to a versioned, multi-architecture digest. Refresh the version and digest periodically; Grype's vulnerability database still updates at runtime.
 - **SBOM generation**: enabled by default; set `generate-sbom: "false"` to skip when you only need the vulnerability scan.
 - **Multi-arch**: Grype scans the image variant that is loaded into the local Docker daemon. When the runner is `linux/amd64` and you need to scan `linux/arm64`, pull with `--platform linux/arm64` first.
 - **GHAS-free fallback**: leave `upload-sarif` at `false`. Findings still appear in the workflow artifact and job summary; the job does not fail.

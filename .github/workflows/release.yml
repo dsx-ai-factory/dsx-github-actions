@@ -45,9 +45,12 @@ jobs:
 
       - name: Update Major Version Tag
         if: steps.semantic.outputs.new-release-published == 'true'
+        env:
+          NEW_RELEASE_VERSION: ${{ steps.semantic.outputs.new-release-version }}
+          NEW_RELEASE_MAJOR_VERSION: ${{ steps.semantic.outputs.new-release-major-version }}
         run: |
-          NEW_VERSION="v${{ steps.semantic.outputs.new-release-version }}"
-          MAJOR_VERSION="v${{ steps.semantic.outputs.new-release-major-version }}"
+          NEW_VERSION="v${NEW_RELEASE_VERSION}"
+          MAJOR_VERSION="v${NEW_RELEASE_MAJOR_VERSION}"
 
           # Configure git
           git config user.name "github-actions[bot]"
@@ -62,14 +65,16 @@ jobs:
       - name: Prepare Release Notes for Slack
         if: steps.semantic.outputs.new-release-published == 'true'
         id: prepare-notes
+        env:
+          RELEASE_NOTES: ${{ steps.semantic.outputs.new-release-notes }}
         run: |
           # Truncate and escape release notes for JSON
-          NOTES=$(echo '${{ steps.semantic.outputs.new-release-notes }}' | head -c 2000 | jq -Rs .)
-          echo "notes=$NOTES" >> $GITHUB_OUTPUT
+          NOTES=$(printf '%s' "$RELEASE_NOTES" | head -c 2000 | jq -Rs .)
+          echo "notes=$NOTES" >> "$GITHUB_OUTPUT"
 
           # Also create a simple summary
-          SUMMARY=$(echo '${{ steps.semantic.outputs.new-release-notes }}' | head -n 3 | sed 's/^# //' | tr '\n' ' ')
-          echo "summary=$SUMMARY" >> $GITHUB_OUTPUT
+          SUMMARY=$(printf '%s\n' "$RELEASE_NOTES" | head -n 3 | sed 's/^# //' | tr '\n' ' ' | jq -Rs .)
+          echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
 
       - name: Notify Slack - Release Published
         if: steps.semantic.outputs.new-release-published == 'true'
@@ -113,7 +118,7 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "${{ steps.prepare-notes.outputs.summary }}"
+                    "text": ${{ steps.prepare-notes.outputs.summary }}
                   }
                 },
                 {

@@ -40,12 +40,31 @@ case "$(uname -m)" in
   aarch64 | arm64) ngc_cli_file="ngccli_arm64.zip" ;;
   *) log_error "Unsupported architecture for NGC CLI: $(uname -m)"; exit 1 ;;
 esac
+
+case "${NGCCLI_VERSION}:${ngc_cli_file}" in
+  4.9.17:ngccli_linux.zip)
+    expected_sha256="b1cc4299151cdcbc2bd18318c0a3b7f321f3e62e20ba234b6a8a0e7024cf3b44"
+    ;;
+  4.9.17:ngccli_arm64.zip)
+    expected_sha256="7945c17290b0bb4003b01065149a4d2f254335e56037b16d9417c1aec566e60c"
+    ;;
+  *)
+    expected_sha256="${NGCCLI_SHA256:-}"
+    if [[ -z "$expected_sha256" ]]; then
+      log_error "No trusted checksum configured for NGC CLI ${NGCCLI_VERSION} (${ngc_cli_file})"
+      exit 1
+    fi
+    ;;
+esac
+
 download_url="https://api.ngc.nvidia.com/v2/resources/nvidia/ngc-apps/ngc_cli/versions/${NGCCLI_VERSION}/files/${ngc_cli_file}"
 work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT
 
 log_info "Downloading NGC CLI from $download_url"
 curl -sSfL "$download_url" -o "$work_dir/ngccli.zip"
+printf '%s  %s\n' "$expected_sha256" "$work_dir/ngccli.zip" | sha256sum -c -
+log_info "Verified NGC CLI SHA256 checksum"
 unzip -q "$work_dir/ngccli.zip" -d "$work_dir"
 
 extract_dir=$(find "$work_dir" -maxdepth 2 -type d -name 'ngc-cli*' | head -n 1)
