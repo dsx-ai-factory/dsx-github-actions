@@ -5,7 +5,7 @@
   "private": true,
   "repository": {
     "type": "git",
-    "url": "https://github.com/NVIDIA/dsx-github-actions.git"
+    "url": "https://github.com/dsx-ai-factory/dsx-github-actions.git"
   },
   "keywords": [
     "github-actions",
