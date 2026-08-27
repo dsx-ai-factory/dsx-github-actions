@@ -105,6 +105,9 @@ runs:
             --username "$REGISTRY_USERNAME" \
             --password-stdin
 
+        # Clear credentials before plugin install (plugin hooks could read env)
+        unset REGISTRY_PASSWORD REGISTRY_USERNAME
+
         echo "Installing helm-unittest from OCI: $PLUGIN_OCI_REF"
         helm plugin install "$PLUGIN_OCI_REF" --verify=false
 
