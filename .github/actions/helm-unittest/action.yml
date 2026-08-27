@@ -1,0 +1,110 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# This action is based on d3adb5/helm-unittest-action (MIT License)
+# Original: https://github.com/d3adb5/helm-unittest-action
+# Copyright (c) 2022 d3adb5
+
+name: "Helm Unit Tests"
+description: "Run Helm chart unit tests with helm-unittest plugin"
+
+branding:
+  icon: check-square
+  color: green
+
+inputs:
+  helm-version:
+    description: "Which version of Helm to install"
+    required: false
+    default: "v3.13.2"
+
+  plugin-oci-ref:
+    description: "OCI reference for helm-unittest plugin (e.g., 'oci://nvcr.io/nvidia/helm-unittest:1.1.2')"
+    required: true
+
+  registry-host:
+    description: "OCI registry hostname for authentication (e.g., 'nvcr.io')"
+    required: false
+    default: "nvcr.io"
+
+  registry-username:
+    description: "Username for OCI registry authentication"
+    required: false
+    default: "$oauthtoken"
+
+  registry-password:
+    description: "Password or token for OCI registry authentication"
+    required: true
+
+  flags:
+    description: "Flags to pass to helm unittest"
+    required: false
+    default: "--color"
+
+  charts:
+    description: "Charts to run tests for, separated by spaces or newlines. Paths must not contain spaces."
+    required: true
+
+  install-mode:
+    description: >-
+      Whether to force install helm-unittest ("force"), try a simple install
+      (empty) or skip if the plugin is present ("if-not-present")
+    required: false
+    default: "if-not-present"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Helm
+      shell: bash
+      run: |
+        "${{ github.action_path }}/../helm-shared/scripts/install-helm.sh" \
+          "${{ inputs.helm-version }}"
+
+    - name: Login to OCI registry
+      run: |
+        echo "${{ inputs.registry-password }}" | \
+          helm registry login "${{ inputs.registry-host }}" \
+            --username "${{ inputs.registry-username }}" \
+            --password-stdin
+      shell: bash
+
+    # helm plugin install has no --force flag, so uninstall first when forcing
+    - name: Uninstall helm-unittest if present
+      if: inputs.install-mode == 'force'
+      run: |
+        helm plugin uninstall unittest >/dev/null 2>/dev/null \
+          || echo "Failed to uninstall plugin, assuming it's not present."
+      shell: bash
+
+    - name: Install helm-unittest
+      run: |
+        if helm plugin list | grep -qw '^unittest'; then
+          if [ "${{ inputs.install-mode }}" = "if-not-present" ]; then
+            echo "Plugin already installed, skipping installation step."
+            exit 0
+          elif [ "${{ inputs.install-mode }}" != "force" ]; then
+            echo "Plugin already installed, aborting."
+            exit 1
+          fi
+        fi
+
+        echo "Installing helm-unittest from OCI: ${{ inputs.plugin-oci-ref }}"
+        helm plugin install "${{ inputs.plugin-oci-ref }}"
+      shell: bash
+
+    - name: Run unit tests
+      run: helm unittest ${{ inputs.flags }} ${{ inputs.charts }}
+      shell: bash
