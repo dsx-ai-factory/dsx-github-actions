@@ -28,16 +28,12 @@ inputs:
   helm-version:
     description: "Which version of Helm to install"
     required: false
-    default: "v3.13.2"
+    # Helm 4.2.1-4.2.4 has oras-go bug: https://github.com/helm/helm/issues/32247
+    default: "v4.2.0"
 
   plugin-oci-ref:
-    description: "OCI reference for helm-unittest plugin (e.g., 'oci://nvcr.io/nvidia/helm-unittest:1.1.2')"
+    description: "OCI reference for helm-unittest plugin (e.g., 'oci://nvcr.io/ORG/TEAM/unittest:1.1.2')"
     required: true
-
-  registry-host:
-    description: "OCI registry hostname for authentication (e.g., 'nvcr.io')"
-    required: false
-    default: "nvcr.io"
 
   registry-username:
     description: "Username for OCI registry authentication"
@@ -73,21 +69,13 @@ runs:
         "${{ github.action_path }}/../helm-shared/scripts/install-helm.sh" \
           "${{ inputs.helm-version }}"
 
-    - name: Login to OCI registry
-      run: |
-        echo "${{ inputs.registry-password }}" | \
-          helm registry login "${{ inputs.registry-host }}" \
-            --username "${{ inputs.registry-username }}" \
-            --password-stdin
-      shell: bash
-
     # helm plugin install has no --force flag, so uninstall first when forcing
     - name: Uninstall helm-unittest if present
       if: inputs.install-mode == 'force'
+      shell: bash
       run: |
         helm plugin uninstall unittest >/dev/null 2>/dev/null \
           || echo "Failed to uninstall plugin, assuming it's not present."
-      shell: bash
 
     - name: Install helm-unittest
       shell: bash
@@ -102,22 +90,26 @@ runs:
           fi
         fi
 
+        # Extract registry host from OCI reference (remove oci:// prefix if present)
+        oci_ref="${{ inputs.plugin-oci-ref }}"
+        oci_ref="${oci_ref#oci://}"
+        registry_host=$(echo "$oci_ref" | cut -d'/' -f1)
+
+        echo "Logging into $registry_host..."
+        echo "${{ inputs.registry-password }}" | \
+          helm registry login "$registry_host" \
+            --username "${{ inputs.registry-username }}" \
+            --password-stdin
+
         echo "Installing helm-unittest from OCI: ${{ inputs.plugin-oci-ref }}"
-
-        # Helm 3.x doesn't support OCI for plugin install directly.
-        # Pull the artifact and install from local path.
-        workdir=$(mktemp -d)
-        trap 'rm -rf "$workdir"' EXIT
-
-        helm pull "${{ inputs.plugin-oci-ref }}" --destination "$workdir" --untar
-        helm plugin install "$workdir/helm-unittest"
+        helm plugin install "${{ inputs.plugin-oci-ref }}" --verify=false
 
     - name: Run unit tests
       shell: bash
-      run: |-
+      run: |
         charts="${{ inputs.charts }}"
-        if [ -z "${charts// /}" ]; then
-          echo "Error: 'charts' input is required and cannot be empty"
+        if [[ ! "$charts" =~ [^[:space:]] ]]; then
+          echo "Error: 'charts' input is required and cannot be empty or whitespace-only"
           exit 1
         fi
         helm unittest ${{ inputs.flags }} $charts
