@@ -90,6 +90,7 @@ runs:
       shell: bash
 
     - name: Install helm-unittest
+      shell: bash
       run: |
         if helm plugin list | grep -qw '^unittest'; then
           if [ "${{ inputs.install-mode }}" = "if-not-present" ]; then
@@ -102,9 +103,21 @@ runs:
         fi
 
         echo "Installing helm-unittest from OCI: ${{ inputs.plugin-oci-ref }}"
-        helm plugin install "${{ inputs.plugin-oci-ref }}"
-      shell: bash
+
+        # Helm 3.x doesn't support OCI for plugin install directly.
+        # Pull the artifact and install from local path.
+        workdir=$(mktemp -d)
+        trap 'rm -rf "$workdir"' EXIT
+
+        helm pull "${{ inputs.plugin-oci-ref }}" --destination "$workdir" --untar
+        helm plugin install "$workdir/helm-unittest"
 
     - name: Run unit tests
-      run: helm unittest ${{ inputs.flags }} ${{ inputs.charts }}
       shell: bash
+      run: |-
+        charts="${{ inputs.charts }}"
+        if [ -z "${charts// /}" ]; then
+          echo "Error: 'charts' input is required and cannot be empty"
+          exit 1
+        fi
+        helm unittest ${{ inputs.flags }} $charts

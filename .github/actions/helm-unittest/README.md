@@ -2,7 +2,7 @@
 
 Run [helm-unittest](https://github.com/helm-unittest/helm-unittest) against Helm charts in your repository.
 
-This action installs Helm, the helm-unittest plugin from an OCI registry, and runs unit tests for specified charts or all charts found in the repository.
+This action installs Helm, the helm-unittest plugin from an OCI registry and runs unit tests for the specified charts.
 
 > **Note**: This action is based on [d3adb5/helm-unittest-action](https://github.com/d3adb5/helm-unittest-action) (MIT License), adopted for NVIDIA enterprise use where all dependencies must come from enterprise-owned infrastructure.
 
@@ -46,6 +46,7 @@ jobs:
   with:
     plugin-oci-ref: "oci://nvcr.io/ORG/REPO/helm-unittest:1.1.2"
     registry-password: ${{ secrets.NGC_CLI_API_KEY }}
+    charts: charts/my-app
     flags: "--color --output-type JUnit --output-file test-results.xml"
 ```
 
@@ -62,6 +63,7 @@ jobs:
         with:
           plugin-oci-ref: "oci://nvcr.io/ORG/REPO/helm-unittest:1.1.2"
           registry-password: ${{ secrets.NGC_CLI_API_KEY }}
+          charts: charts/my-app
           helm-version: v3.14.0
 
       # Helm is now available for additional commands
