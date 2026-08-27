@@ -79,37 +79,44 @@ runs:
 
     - name: Install helm-unittest
       shell: bash
+      env:
+        PLUGIN_OCI_REF: ${{ inputs.plugin-oci-ref }}
+        REGISTRY_USERNAME: ${{ inputs.registry-username }}
+        REGISTRY_PASSWORD: ${{ inputs.registry-password }}
+        INSTALL_MODE: ${{ inputs.install-mode }}
       run: |
         if helm plugin list | grep -qw '^unittest'; then
-          if [ "${{ inputs.install-mode }}" = "if-not-present" ]; then
+          if [ "$INSTALL_MODE" = "if-not-present" ]; then
             echo "Plugin already installed, skipping installation step."
             exit 0
-          elif [ "${{ inputs.install-mode }}" != "force" ]; then
+          elif [ "$INSTALL_MODE" != "force" ]; then
             echo "Plugin already installed, aborting."
             exit 1
           fi
         fi
 
         # Extract registry host from OCI reference (remove oci:// prefix if present)
-        oci_ref="${{ inputs.plugin-oci-ref }}"
-        oci_ref="${oci_ref#oci://}"
+        oci_ref="${PLUGIN_OCI_REF#oci://}"
         registry_host=$(echo "$oci_ref" | cut -d'/' -f1)
 
         echo "Logging into $registry_host..."
-        echo "${{ inputs.registry-password }}" | \
+        echo "$REGISTRY_PASSWORD" | \
           helm registry login "$registry_host" \
-            --username "${{ inputs.registry-username }}" \
+            --username "$REGISTRY_USERNAME" \
             --password-stdin
 
-        echo "Installing helm-unittest from OCI: ${{ inputs.plugin-oci-ref }}"
-        helm plugin install "${{ inputs.plugin-oci-ref }}" --verify=false
+        echo "Installing helm-unittest from OCI: $PLUGIN_OCI_REF"
+        helm plugin install "$PLUGIN_OCI_REF" --verify=false
 
     - name: Run unit tests
       shell: bash
+      env:
+        CHARTS: ${{ inputs.charts }}
+        FLAGS: ${{ inputs.flags }}
       run: |
-        charts="${{ inputs.charts }}"
-        if [[ ! "$charts" =~ [^[:space:]] ]]; then
+        if [[ ! "$CHARTS" =~ [^[:space:]] ]]; then
           echo "Error: 'charts' input is required and cannot be empty or whitespace-only"
           exit 1
         fi
-        helm unittest ${{ inputs.flags }} $charts
+        # shellcheck disable=SC2086
+        helm unittest $FLAGS $CHARTS
