@@ -25,7 +25,9 @@ RED=${RED:-$'\033[91m'}
 GREEN=${GREEN:-$'\033[92m'}
 RESET=${RESET:-$'\033[0m'}
 
+# Log info message to stdout
 log_info() { printf '%s[INFO]%s %s\n' "$GREEN" "$RESET" "$1"; }
+# Log error message to stdout
 log_error() { printf '%s[ERROR]%s %s\n' "$RED" "$RESET" "$1"; }
 
 # Parse arguments
