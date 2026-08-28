@@ -14,6 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+# Usage: install-helm.sh [VERSION] [--force]
+#   VERSION   Helm version to install (default: v3.13.2)
+#   --force   Install even if Helm is already present
+#
 # shellcheck shell=bash
 set -euo pipefail
 
