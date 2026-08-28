@@ -14,6 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+# Usage: install-helm.sh [VERSION] [--force]
+#   VERSION   Helm version to install (default: v3.13.2)
+#   --force   Install even if Helm is already present
+#
 # shellcheck shell=bash
 set -euo pipefail
 
@@ -21,13 +25,32 @@ RED=${RED:-$'\033[91m'}
 GREEN=${GREEN:-$'\033[92m'}
 RESET=${RESET:-$'\033[0m'}
 
+# Log info message to stdout
 log_info() { printf '%s[INFO]%s %s\n' "$GREEN" "$RESET" "$1"; }
+# Log error message to stdout
 log_error() { printf '%s[ERROR]%s %s\n' "$RED" "$RESET" "$1"; }
 
-HELM_VERSION="${1:-v3.13.2}"
+# Parse arguments
+HELM_VERSION="v3.13.2"
+FORCE=false
 
-if command -v helm >/dev/null 2>&1; then
-  log_info "Helm already available, skipping installation."
+for arg in "$@"; do
+  case $arg in
+    --force)
+      FORCE=true
+      ;;
+    v*)
+      HELM_VERSION="$arg"
+      ;;
+    *)
+      log_error "Invalid argument"
+      exit 1
+      ;;
+  esac
+done
+
+if command -v helm >/dev/null 2>&1 && [ "$FORCE" = false ]; then
+  log_info "Helm already available, skipping installation. Use --force to reinstall."
   exit 0
 fi
 
@@ -61,7 +84,7 @@ cp "$WORK_DIR/${OS}-${ARCH}/helm" "$INSTALL_DIR/helm"
 chmod +x "$INSTALL_DIR/helm"
 
 # Add to PATH if not already there (for GHA)
-echo "$INSTALL_DIR" >> "$GITHUB_PATH"
+echo "$INSTALL_DIR" >>"$GITHUB_PATH"
 
 log_info "Helm installed successfully at $INSTALL_DIR/helm"
 "$INSTALL_DIR/helm" version

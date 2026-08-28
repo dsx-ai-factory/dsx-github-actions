@@ -65,9 +65,11 @@ runs:
   steps:
     - name: Install Helm
       shell: bash
+      env:
+        HELM_VERSION: ${{ inputs.helm-version }}
       run: |
         "${{ github.action_path }}/../helm-shared/scripts/install-helm.sh" \
-          "${{ inputs.helm-version }}"
+          "$HELM_VERSION" --force
 
     # helm plugin install has no --force flag, so uninstall first when forcing
     - name: Uninstall helm-unittest if present
