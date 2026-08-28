@@ -79,7 +79,7 @@ jobs:
 | `charts`            | Charts to run tests for, separated by spaces or newlines. Paths must not contain spaces.      | **Yes**  | -                |
 | `registry-username` | Username for OCI registry authentication                                                      | No       | `$oauthtoken`    |
 | `helm-version`      | Which version of Helm to install (4.2.1-4.2.4 have [oras-go bug](https://github.com/helm/helm/issues/32247)) | No | `v4.2.0` |
-| `flags`             | Which flags to pass to helm-unittest when running unit tests                                  | No       | `--color`        |
+| `flags`             | Which flags to pass to helm-unittest when running unit tests                                  | No       | `""`             |
 | `install-mode`      | One of `"force"`, `"if-not-present"`, or `""`. See below.                                     | No       | `if-not-present` |
 
 ### plugin-oci-ref

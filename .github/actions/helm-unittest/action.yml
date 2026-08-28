@@ -47,7 +47,7 @@ inputs:
   flags:
     description: "Flags to pass to helm unittest"
     required: false
-    default: "--color"
+    default: ""
 
   charts:
     description: "Charts to run tests for, separated by spaces or newlines. Paths must not contain spaces."
@@ -124,4 +124,4 @@ runs:
           exit 1
         fi
         # shellcheck disable=SC2086
-        helm unittest $FLAGS $CHARTS
+        helm unittest $FLAGS -- $CHARTS
