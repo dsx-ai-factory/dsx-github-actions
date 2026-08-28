@@ -19,6 +19,7 @@ A collection of reusable GitHub Actions for standardizing CI/CD workflows across
 | [go-test](.github/actions/go-test/)                     | Go tests with coverage and JUnit  | Go test execution and reporting   |
 | [license-headers](.github/actions/license-headers/)     | SPDX license header checks        | License compliance                |
 | [commitlint](.github/actions/commitlint/)               | Conventional commit validation    | Commit message enforcement        |
+| [helm-unittest](.github/actions/helm-unittest/)         | Run Helm chart unit tests         | Helm chart testing                |
 
 ## ♻️ Available Workflows
 
@@ -120,6 +121,7 @@ This reusable workflow wraps `skopeo copy`, so it copies the entire manifest lis
 - [Go Test Action](.github/actions/go-test/README.md)
 - [License Headers Action](.github/actions/license-headers/README.md)
 - [Commitlint Action](.github/actions/commitlint/README.md)
+- [Helm Unit Tests Action](.github/actions/helm-unittest/README.md)
 - [Workflows Guide](.github/workflows/README.md)
 
 ## 🎯 Features
@@ -328,6 +330,7 @@ If CI still fails, execute `pre-commit run actionlint --all-files` or `pre-commi
 │   ├── go-lint/                  # Go linting (golangci-lint, fmt, vet)
 │   ├── go-test/                  # Go tests with coverage and JUnit
 │   ├── license-headers/          # SPDX license header checks
+│   ├── helm-unittest/            # Helm chart unit testing
 │   └── commitlint/               # Conventional commit validation
 └── workflows/
     ├── release.yml         # Automatic semantic versioning

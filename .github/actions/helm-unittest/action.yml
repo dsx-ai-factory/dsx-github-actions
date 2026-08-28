@@ -1,0 +1,125 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# This action is based on d3adb5/helm-unittest-action (MIT License)
+# Original: https://github.com/d3adb5/helm-unittest-action
+# Copyright (c) 2022 d3adb5
+
+name: "Helm Unit Tests"
+description: "Run Helm chart unit tests with helm-unittest plugin"
+
+branding:
+  icon: check-square
+  color: green
+
+inputs:
+  helm-version:
+    description: "Which version of Helm to install"
+    required: false
+    # Helm 4.2.1-4.2.4 has oras-go bug: https://github.com/helm/helm/issues/32247
+    default: "v4.2.0"
+
+  plugin-oci-ref:
+    description: "OCI reference for helm-unittest plugin (e.g., 'oci://nvcr.io/ORG/TEAM/unittest:1.1.2')"
+    required: true
+
+  registry-username:
+    description: "Username for OCI registry authentication"
+    required: false
+    default: "$oauthtoken"
+
+  registry-password:
+    description: "Password or token for OCI registry authentication"
+    required: true
+
+  flags:
+    description: "Flags to pass to helm unittest"
+    required: false
+    default: "--color"
+
+  charts:
+    description: "Charts to run tests for, separated by spaces or newlines. Paths must not contain spaces."
+    required: true
+
+  install-mode:
+    description: >-
+      Whether to force install helm-unittest ("force"), try a simple install
+      (empty) or skip if the plugin is present ("if-not-present")
+    required: false
+    default: "if-not-present"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Helm
+      shell: bash
+      run: |
+        "${{ github.action_path }}/../helm-shared/scripts/install-helm.sh" \
+          "${{ inputs.helm-version }}"
+
+    # helm plugin install has no --force flag, so uninstall first when forcing
+    - name: Uninstall helm-unittest if present
+      if: inputs.install-mode == 'force'
+      shell: bash
+      run: |
+        helm plugin uninstall unittest >/dev/null 2>/dev/null \
+          || echo "Failed to uninstall plugin, assuming it's not present."
+
+    - name: Install helm-unittest
+      shell: bash
+      env:
+        PLUGIN_OCI_REF: ${{ inputs.plugin-oci-ref }}
+        REGISTRY_USERNAME: ${{ inputs.registry-username }}
+        REGISTRY_PASSWORD: ${{ inputs.registry-password }}
+        INSTALL_MODE: ${{ inputs.install-mode }}
+      run: |
+        if helm plugin list | grep -qw '^unittest'; then
+          if [ "$INSTALL_MODE" = "if-not-present" ]; then
+            echo "Plugin already installed, skipping installation step."
+            exit 0
+          elif [ "$INSTALL_MODE" != "force" ]; then
+            echo "Plugin already installed, aborting."
+            exit 1
+          fi
+        fi
+
+        # Extract registry host from OCI reference (remove oci:// prefix if present)
+        oci_ref="${PLUGIN_OCI_REF#oci://}"
+        registry_host=$(echo "$oci_ref" | cut -d'/' -f1)
+
+        echo "Logging into $registry_host..."
+        echo "$REGISTRY_PASSWORD" | \
+          helm registry login "$registry_host" \
+            --username "$REGISTRY_USERNAME" \
+            --password-stdin
+
+        # Clear credentials before plugin install (plugin hooks could read env)
+        unset REGISTRY_PASSWORD REGISTRY_USERNAME
+
+        echo "Installing helm-unittest from OCI: $PLUGIN_OCI_REF"
+        helm plugin install "$PLUGIN_OCI_REF" --verify=false
+
+    - name: Run unit tests
+      shell: bash
+      env:
+        CHARTS: ${{ inputs.charts }}
+        FLAGS: ${{ inputs.flags }}
+      run: |
+        if [[ ! "$CHARTS" =~ [^[:space:]] ]]; then
+          echo "Error: 'charts' input is required and cannot be empty or whitespace-only"
+          exit 1
+        fi
+        # shellcheck disable=SC2086
+        helm unittest $FLAGS $CHARTS
