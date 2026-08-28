@@ -146,25 +146,40 @@ runs:
           exit 0
         fi
 
+        # Grype can only send one format to stdout, so a single invocation has to
+        # write the reports to files and have them collected afterwards.
+        report_dir="$(mktemp -d)"
+
         echo "Scanning image: ${IMAGE}"
+        # One scan producing all three formats. Each invocation re-reads the
+        # image and re-resolves the vulnerability database, so requesting the
+        # formats separately performed the same scan three times over.
+        #
+        # GRYPE_DB_CACHE_DIR is what makes the cache mount below take effect. The
+        # scanner image declares no HOME, so Grype's default cache directory
+        # resolves to /.cache/grype/db and nothing is ever read from or written
+        # to /root/.cache/grype -- leaving the database to be downloaded again on
+        # every scan.
         docker run --rm \
+          -e GRYPE_DB_CACHE_DIR=/root/.cache/grype/db \
           -v /var/run/docker.sock:/var/run/docker.sock \
           -v "$HOME/.cache/grype:/root/.cache/grype" \
+          -v "${report_dir}:/reports" \
           "${GRYPE_IMAGE}" \
-          "${IMAGE}" --fail-on "${FAIL_ON}" -o json > "${REPORT_JSON}"
+          "${IMAGE}" --fail-on "${FAIL_ON}" \
+          -o json=/reports/report.json \
+          -o sarif=/reports/report.sarif \
+          -o table=/reports/report.table
         scan_rc=$?
 
-        docker run --rm \
-          -v /var/run/docker.sock:/var/run/docker.sock \
-          -v "$HOME/.cache/grype:/root/.cache/grype" \
-          "${GRYPE_IMAGE}" \
-          "${IMAGE}" -o sarif > "${REPORT_SARIF}" || true
-
-        docker run --rm \
-          -v /var/run/docker.sock:/var/run/docker.sock \
-          -v "$HOME/.cache/grype:/root/.cache/grype" \
-          "${GRYPE_IMAGE}" \
-          "${IMAGE}" -o table > "${REPORT_TABLE}" || true
+        # Copied out rather than written straight to the destinations, because
+        # the scanner runs as root and would otherwise leave root-owned files in
+        # the workspace for subsequent steps. Each is copied only if non-empty,
+        # so a scan that fails partway still yields whatever it did produce.
+        [ -s "${report_dir}/report.json" ]  && cp "${report_dir}/report.json"  "${REPORT_JSON}"
+        [ -s "${report_dir}/report.sarif" ] && cp "${report_dir}/report.sarif" "${REPORT_SARIF}"
+        [ -s "${report_dir}/report.table" ] && cp "${report_dir}/report.table" "${REPORT_TABLE}"
+        rm -rf "${report_dir}"
 
         echo "exit_code=${scan_rc}" >> "$GITHUB_OUTPUT"
         if [ $scan_rc -eq 0 ]; then
