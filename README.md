@@ -125,6 +125,7 @@ This reusable workflow wraps `skopeo copy`, so it copies the entire manifest lis
 - [Commitlint Action](.github/actions/commitlint/README.md)
 - [Helm Unit Tests Action](.github/actions/helm-unittest/README.md)
 - [Workflows Guide](.github/workflows/README.md)
+- [Release Candidate Artifact Publishing](docs/release-candidate-publishing.md)
 
 ## 🎯 Features
 
