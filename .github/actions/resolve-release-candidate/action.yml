@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: "Resolve Release Candidate"
+description: "Select an RC produced by semantic-release, including idempotent workflow reruns"
+
+inputs:
+  new-release-published:
+    description: "Whether semantic-release published a release in this run"
+    required: false
+    default: "false"
+  new-release-version:
+    description: "Version emitted by semantic-release"
+    required: false
+    default: ""
+  new-release-git-tag:
+    description: "Git tag emitted by semantic-release"
+    required: false
+    default: ""
+  prerelease-identifier:
+    description: "SemVer prerelease identifier to accept"
+    required: false
+    default: "rc"
+  tag-prefix:
+    description: "Prefix used by release tags"
+    required: false
+    default: "v"
+
+outputs:
+  should-publish:
+    description: "Whether the current commit is an RC whose artifacts should be published"
+    value: ${{ steps.resolve.outputs.should-publish }}
+  version:
+    description: "Normalized RC version without the tag prefix"
+    value: ${{ steps.resolve.outputs.version }}
+  tag:
+    description: "RC Git tag"
+    value: ${{ steps.resolve.outputs.tag }}
+  reused-existing-tag:
+    description: "Whether an RC tag already on HEAD was selected for a workflow rerun"
+    value: ${{ steps.resolve.outputs.reused-existing-tag }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Resolve release candidate
+      id: resolve
+      shell: bash
+      env:
+        NEW_RELEASE_PUBLISHED: ${{ inputs.new-release-published }}
+        NEW_RELEASE_VERSION: ${{ inputs.new-release-version }}
+        NEW_RELEASE_GIT_TAG: ${{ inputs.new-release-git-tag }}
+        PRERELEASE_IDENTIFIER: ${{ inputs.prerelease-identifier }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+      run: |
+        "${{ github.action_path }}/resolve.sh"

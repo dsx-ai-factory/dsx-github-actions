@@ -11,6 +11,7 @@ A collection of reusable GitHub Actions for standardizing CI/CD workflows across
 | [security-container-scan](.github/actions/security-container-scan/) | Container vuln scan (SBOM + Grype) | Container image CVE detection     |
 | [security-container-scan-aggregate](.github/actions/security-container-scan-aggregate/) | Aggregate multi-image Grype reports into one summary | Per-PR consolidated scan summary + sticky comment |
 | [semantic-release](.github/actions/semantic-release/)   | Automated versioning and releases | Semantic versioning and changelog |
+| [resolve-release-candidate](.github/actions/resolve-release-candidate/) | Select RC releases and make artifact publishing rerunnable | Prerelease artifact publishing |
 | [resource-push-ngc](.github/actions/resource-push-ngc/) | Push resources to NGC             | Artifact publishing               |
 | [docker-build](.github/actions/docker-build/)           | Docker Buildx build/push wrapper  | Build/push multi-arch OCI images  |
 | [git-tag](.github/actions/git-tag/)                     | Create and push git tag           | Tagging releases                  |
@@ -114,6 +115,7 @@ This reusable workflow wraps `skopeo copy`, so it copies the entire manifest lis
 - [Security Container Scan Action](.github/actions/security-container-scan/README.md)
 - [Security Container Scan Aggregate Action](.github/actions/security-container-scan-aggregate/README.md)
 - [Semantic Release Action](.github/actions/semantic-release/README.md)
+- [Resolve Release Candidate Action](.github/actions/resolve-release-candidate/README.md)
 - [Resource Push NGC Action](.github/actions/resource-push-ngc/README.md)
 - [Docker Build Action](.github/actions/docker-build/README.md)
 - [Slack Notify Action](.github/actions/slack-notify/README.md)
@@ -123,6 +125,7 @@ This reusable workflow wraps `skopeo copy`, so it copies the entire manifest lis
 - [Commitlint Action](.github/actions/commitlint/README.md)
 - [Helm Unit Tests Action](.github/actions/helm-unittest/README.md)
 - [Workflows Guide](.github/workflows/README.md)
+- [Release Candidate Artifact Publishing](docs/release-candidate-publishing.md)
 
 ## 🎯 Features
 
