@@ -43,6 +43,7 @@ jobs:
       contents: write
     outputs:
       publish-rc: ${{ steps.rc.outputs.should-publish }}
+      reused-tag: ${{ steps.rc.outputs.reused-existing-tag }}
       version: ${{ steps.rc.outputs.version }}
       tag: ${{ steps.rc.outputs.tag }}
     steps:
@@ -66,7 +67,10 @@ jobs:
         shell: bash
         run: |
           target_version="${GITHUB_REF_NAME#release/}"
-          [[ "$PREVIEW_VERSION" == "$target_version"-rc.* ]]
+          rc_prefix="${target_version}-rc."
+          rc_number="${PREVIEW_VERSION#"$rc_prefix"}"
+          [[ "$PREVIEW_VERSION" == "$rc_prefix"* ]]
+          [[ "$rc_number" =~ ^[1-9][0-9]*$ ]]
 
       - name: Create release
         id: semantic
@@ -88,7 +92,11 @@ jobs:
 ## Image Job
 
 Use `docker-build` with the resolved version. A matrix can publish multiple
-images without encoding component-specific paths in the shared action.
+images without encoding component-specific paths in the shared action. The
+component repository must provide `scripts/verify-rc-image.sh`: return `0` only
+when both required platforms exist and every
+`org.opencontainers.image.revision` label matches the expected commit, return
+`3` when the tag does not exist, and fail for every other condition.
 
 ```yaml
   publish-images:
@@ -102,7 +110,34 @@ images without encoding component-specific paths in the shared action.
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.release.outputs.tag }}
-      - uses: dsx-ai-factory/dsx-github-actions/.github/actions/docker-build@<commit-sha>
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the registry
+        uses: docker/login-action@v3
+        with:
+          registry: nvcr.io
+          username: $oauthtoken
+          password: ${{ secrets.NGC_DSX_COMPONENTS_PUSH_KEY }}
+
+      - name: Check existing image
+        id: existing
+        env:
+          IMAGE_REF: nvcr.io/ORG/TEAM/component:${{ needs.release.outputs.version }}
+        run: |
+          set +e
+          scripts/verify-rc-image.sh "$IMAGE_REF" "$GITHUB_SHA"
+          status=$?
+          set -e
+          case "$status" in
+            0) echo "exists=true" >> "$GITHUB_OUTPUT" ;;
+            3) echo "exists=false" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
+
+      - name: Build and publish image
+        if: steps.existing.outputs.exists != 'true'
+        uses: dsx-ai-factory/dsx-github-actions/.github/actions/docker-build@<commit-sha>
         with:
           image: nvcr.io/ORG/TEAM/component
           tags: ${{ needs.release.outputs.version }}
@@ -110,6 +145,12 @@ images without encoding component-specific paths in the shared action.
           username: $oauthtoken
           password: ${{ secrets.NGC_DSX_COMPONENTS_PUSH_KEY }}
           push: "true"
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Verify published image
+        env:
+          IMAGE_REF: nvcr.io/ORG/TEAM/component:${{ needs.release.outputs.version }}
+        run: scripts/verify-rc-image.sh "$IMAGE_REF" "$GITHUB_SHA"
 ```
 
 ## Helm Job
@@ -130,7 +171,17 @@ version in the job workspace before packaging.
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.release.outputs.tag }}
-      - uses: dsx-ai-factory/dsx-github-actions/.github/actions/helm-package-push@<commit-sha>
+
+      - name: Stamp source revision
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          yq -i \
+            '.annotations = (.annotations // {}) | .annotations."dsx.nvidia.com/source-revision" = strenv(SOURCE_REVISION)' \
+            deploy/component/Chart.yaml
+
+      - name: Publish chart
+        uses: dsx-ai-factory/dsx-github-actions/.github/actions/helm-package-push@<commit-sha>
         with:
           chart-path: deploy/component
           chart-version: ${{ needs.release.outputs.version }}
@@ -138,6 +189,17 @@ version in the job workspace before packaging.
           ngc-key: ${{ secrets.NGC_DSX_COMPONENTS_PUSH_KEY }}
           ngc-path: ORG/TEAM
           ngc-duplicate: skip
+
+      - name: Verify published chart
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          verify_dir="$(mktemp -d "$RUNNER_TEMP/rc-chart.XXXXXX")"
+          helm pull helm-repo-ngc/component \
+            --version "$RELEASE_VERSION" --destination "$verify_dir"
+          helm show chart "$verify_dir/component-$RELEASE_VERSION.tgz" \
+            | yq -e '.annotations."dsx.nvidia.com/source-revision" == strenv(EXPECTED_REVISION)'
 ```
 
 ## Reruns
@@ -147,6 +209,10 @@ later job fails, a workflow rerun normally reports that no new release was
 created. `resolve-release-candidate` handles this by selecting one matching RC
 tag already pointing at `HEAD`. Multiple matching RC tags fail closed because
 the intended artifact version would be ambiguous.
+
+Expose `reused-existing-tag` for logging and auditing, but do not use it as the
+only rerun condition. A failed first run can leave only some artifacts behind,
+so every artifact job must inspect its own immutable version independently.
 
 Do not rebuild or overwrite an image that already has the RC tag. Stamp images
 with `org.opencontainers.image.revision`; on rerun, verify that every required
