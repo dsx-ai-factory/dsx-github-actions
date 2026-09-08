@@ -7,8 +7,9 @@ artifacts to NGC while stable releases continue through another release path.
 
 - Configure semantic-release in the component repository to create versions in
   the form `MAJOR.MINOR.PATCH-rc.NUMBER` from its release branch.
-- Run semantic-release once, then pass its outputs to
-  `resolve-release-candidate`.
+- Run semantic-release once in publishing mode, then pass its outputs to
+  `resolve-release-candidate`. A preceding dry run may validate the version
+  without creating a second release.
 - Publish only when `should-publish` is `true`.
 - Use the normalized `version` output for every image and Helm chart produced by
   the same repository.
@@ -18,10 +19,16 @@ artifacts to NGC while stable releases continue through another release path.
   jobs only `contents: read`.
 - Enforce PR-only updates and Code Owner approval on every branch that can use
   the publishing environment.
-- When a branch glob uses one static prerelease identifier such as `rc`, keep
-  only one matching branch active. semantic-release requires prerelease
-  identifiers to be unique across active branches.
-- Pin every shared DSX action to an immutable commit SHA.
+- List the active `release/X.Y.Z` branch explicitly in semantic-release rather
+  than combining a branch glob with the static `rc` prerelease identifier.
+  Replace that entry each cycle and delete the old release branch after stable
+  promotion.
+- Run semantic-release in dry-run mode first and verify that its calculated
+  version matches `X.Y.Z-rc.N` from the branch name before creating the tag.
+- Pin the semantic-release version and every extra plugin, and pin every shared
+  DSX action to an immutable commit SHA.
+- Stamp every image and chart with the source commit, and fail closed if an
+  existing RC artifact does not match that commit.
 
 ## Release Job
 
@@ -43,9 +50,30 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Preview release candidate
+        id: preview
+        if: startsWith(github.ref, 'refs/heads/release/')
+        uses: dsx-ai-factory/dsx-github-actions/.github/actions/semantic-release@<commit-sha>
+        with:
+          semantic-version: 25.0.9
+          extra-plugins: conventional-changelog-conventionalcommits@9.3.1
+          dry-run: "true"
+
+      - name: Validate release branch target
+        if: startsWith(github.ref, 'refs/heads/release/') && steps.preview.outputs.new-release-published == 'true'
+        env:
+          PREVIEW_VERSION: ${{ steps.preview.outputs.new-release-version }}
+        shell: bash
+        run: |
+          target_version="${GITHUB_REF_NAME#release/}"
+          [[ "$PREVIEW_VERSION" == "$target_version"-rc.* ]]
+
       - name: Create release
         id: semantic
         uses: dsx-ai-factory/dsx-github-actions/.github/actions/semantic-release@<commit-sha>
+        with:
+          semantic-version: 25.0.9
+          extra-plugins: conventional-changelog-conventionalcommits@9.3.1
 
       - name: Resolve RC publishing
         id: rc
@@ -120,6 +148,9 @@ created. `resolve-release-candidate` handles this by selecting one matching RC
 tag already pointing at `HEAD`. Multiple matching RC tags fail closed because
 the intended artifact version would be ambiguous.
 
-Helm publishing should use `ngc-duplicate: skip`. Image publishing may safely
-retry the same immutable version tag, but consumers should not move or reuse an
-RC tag for a different source commit.
+Do not rebuild or overwrite an image that already has the RC tag. Stamp images
+with `org.opencontainers.image.revision`; on rerun, verify that every required
+platform has the expected revision and skip a matching image. Stamp Helm charts
+with the same source revision. `ngc-duplicate: skip` is safe only when the
+downloaded existing chart is verified against that revision. End every run by
+checking that all expected images and charts exist at the one resolved version.
