@@ -27,7 +27,8 @@ fi
 
 is_release_candidate() {
   local candidate_version="$1"
-  [[ "$candidate_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-${identifier}\.[0-9]+$ ]]
+  local numeric_identifier='(0|[1-9][0-9]*)'
+  [[ "$candidate_version" =~ ^${numeric_identifier}\.${numeric_identifier}\.${numeric_identifier}-${identifier}\.${numeric_identifier}$ ]]
 }
 
 write_outputs() {
