@@ -13,8 +13,14 @@ artifacts to NGC while stable releases continue through another release path.
 - Use the normalized `version` output for every image and Helm chart produced by
   the same repository.
 - Do not publish `latest` or another moving tag from the RC workflow.
-- Keep registry credentials in a GitHub environment secret and grant publishing
+- Keep registry credentials in a GitHub environment secret, restrict that
+  environment to the protected release-branch pattern, and grant publishing
   jobs only `contents: read`.
+- Enforce PR-only updates and Code Owner approval on every branch that can use
+  the publishing environment.
+- When a branch glob uses one static prerelease identifier such as `rc`, keep
+  only one matching branch active. semantic-release requires prerelease
+  identifiers to be unique across active branches.
 - Pin every shared DSX action to an immutable commit SHA.
 
 ## Release Job
@@ -43,6 +49,7 @@ jobs:
 
       - name: Resolve RC publishing
         id: rc
+        if: startsWith(github.ref, 'refs/heads/release/')
         uses: dsx-ai-factory/dsx-github-actions/.github/actions/resolve-release-candidate@<commit-sha>
         with:
           new-release-published: ${{ steps.semantic.outputs.new-release-published }}
@@ -58,7 +65,7 @@ images without encoding component-specific paths in the shared action.
 ```yaml
   publish-images:
     needs: release
-    if: needs.release.outputs.publish-rc == 'true'
+    if: startsWith(github.ref, 'refs/heads/release/') && needs.release.outputs.publish-rc == 'true'
     runs-on: linux-amd64-cpu4
     environment: components-dev
     permissions:
@@ -86,7 +93,7 @@ version in the job workspace before packaging.
 ```yaml
   publish-chart:
     needs: release
-    if: needs.release.outputs.publish-rc == 'true'
+    if: startsWith(github.ref, 'refs/heads/release/') && needs.release.outputs.publish-rc == 'true'
     runs-on: linux-amd64-cpu4
     environment: components-dev
     permissions:
