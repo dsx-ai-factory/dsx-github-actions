@@ -196,6 +196,7 @@ version in the job workspace before packaging.
           RELEASE_VERSION: ${{ needs.release.outputs.version }}
         run: |
           verify_dir="$(mktemp -d "$RUNNER_TEMP/rc-chart.XXXXXX")"
+          helm repo update helm-repo-ngc
           helm pull helm-repo-ngc/component \
             --version "$RELEASE_VERSION" --destination "$verify_dir"
           helm show chart "$verify_dir/component-$RELEASE_VERSION.tgz" \
