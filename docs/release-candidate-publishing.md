@@ -7,15 +7,28 @@ artifacts to NGC while stable releases continue through another release path.
 
 - Configure semantic-release in the component repository to create versions in
   the form `MAJOR.MINOR.PATCH-rc.NUMBER` from its release branch.
-- Run semantic-release once, then pass its outputs to
-  `resolve-release-candidate`.
+- Run semantic-release once in publishing mode, then pass its outputs to
+  `resolve-release-candidate`. A preceding dry run may validate the version
+  without creating a second release.
 - Publish only when `should-publish` is `true`.
 - Use the normalized `version` output for every image and Helm chart produced by
   the same repository.
 - Do not publish `latest` or another moving tag from the RC workflow.
-- Keep registry credentials in a GitHub environment secret and grant publishing
+- Keep registry credentials in a GitHub environment secret, restrict that
+  environment to the protected release-branch pattern, and grant publishing
   jobs only `contents: read`.
-- Pin every shared DSX action to an immutable commit SHA.
+- Enforce PR-only updates and Code Owner approval on every branch that can use
+  the publishing environment.
+- List the active `release/X.Y.Z` branch explicitly in semantic-release rather
+  than combining a branch glob with the static `rc` prerelease identifier.
+  Replace that entry each cycle and delete the old release branch after stable
+  promotion.
+- Run semantic-release in dry-run mode first and verify that its calculated
+  version matches `X.Y.Z-rc.N` from the branch name before creating the tag.
+- Pin the semantic-release version and every extra plugin, and pin every shared
+  DSX action to an immutable commit SHA.
+- Stamp every image and chart with the source commit, and fail closed if an
+  existing RC artifact does not match that commit.
 
 ## Release Job
 
@@ -30,6 +43,7 @@ jobs:
       contents: write
     outputs:
       publish-rc: ${{ steps.rc.outputs.should-publish }}
+      reused-tag: ${{ steps.rc.outputs.reused-existing-tag }}
       version: ${{ steps.rc.outputs.version }}
       tag: ${{ steps.rc.outputs.tag }}
     steps:
@@ -37,12 +51,37 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Preview release candidate
+        id: preview
+        if: startsWith(github.ref, 'refs/heads/release/')
+        uses: dsx-ai-factory/dsx-github-actions/.github/actions/semantic-release@<commit-sha>
+        with:
+          semantic-version: 25.0.9
+          extra-plugins: conventional-changelog-conventionalcommits@9.3.1
+          dry-run: "true"
+
+      - name: Validate release branch target
+        if: startsWith(github.ref, 'refs/heads/release/') && steps.preview.outputs.new-release-published == 'true'
+        env:
+          PREVIEW_VERSION: ${{ steps.preview.outputs.new-release-version }}
+        shell: bash
+        run: |
+          target_version="${GITHUB_REF_NAME#release/}"
+          rc_prefix="${target_version}-rc."
+          rc_number="${PREVIEW_VERSION#"$rc_prefix"}"
+          [[ "$PREVIEW_VERSION" == "$rc_prefix"* ]]
+          [[ "$rc_number" =~ ^[1-9][0-9]*$ ]]
+
       - name: Create release
         id: semantic
         uses: dsx-ai-factory/dsx-github-actions/.github/actions/semantic-release@<commit-sha>
+        with:
+          semantic-version: 25.0.9
+          extra-plugins: conventional-changelog-conventionalcommits@9.3.1
 
       - name: Resolve RC publishing
         id: rc
+        if: startsWith(github.ref, 'refs/heads/release/')
         uses: dsx-ai-factory/dsx-github-actions/.github/actions/resolve-release-candidate@<commit-sha>
         with:
           new-release-published: ${{ steps.semantic.outputs.new-release-published }}
@@ -53,12 +92,16 @@ jobs:
 ## Image Job
 
 Use `docker-build` with the resolved version. A matrix can publish multiple
-images without encoding component-specific paths in the shared action.
+images without encoding component-specific paths in the shared action. The
+component repository must provide `scripts/verify-rc-image.sh`: return `0` only
+when both required platforms exist and every
+`org.opencontainers.image.revision` label matches the expected commit, return
+`3` when the tag does not exist, and fail for every other condition.
 
 ```yaml
   publish-images:
     needs: release
-    if: needs.release.outputs.publish-rc == 'true'
+    if: startsWith(github.ref, 'refs/heads/release/') && needs.release.outputs.publish-rc == 'true'
     runs-on: linux-amd64-cpu4
     environment: components-dev
     permissions:
@@ -67,7 +110,34 @@ images without encoding component-specific paths in the shared action.
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.release.outputs.tag }}
-      - uses: dsx-ai-factory/dsx-github-actions/.github/actions/docker-build@<commit-sha>
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the registry
+        uses: docker/login-action@v3
+        with:
+          registry: nvcr.io
+          username: $oauthtoken
+          password: ${{ secrets.NGC_DSX_COMPONENTS_PUSH_KEY }}
+
+      - name: Check existing image
+        id: existing
+        env:
+          IMAGE_REF: nvcr.io/ORG/TEAM/component:${{ needs.release.outputs.version }}
+        run: |
+          set +e
+          scripts/verify-rc-image.sh "$IMAGE_REF" "$GITHUB_SHA"
+          status=$?
+          set -e
+          case "$status" in
+            0) echo "exists=true" >> "$GITHUB_OUTPUT" ;;
+            3) echo "exists=false" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
+
+      - name: Build and publish image
+        if: steps.existing.outputs.exists != 'true'
+        uses: dsx-ai-factory/dsx-github-actions/.github/actions/docker-build@<commit-sha>
         with:
           image: nvcr.io/ORG/TEAM/component
           tags: ${{ needs.release.outputs.version }}
@@ -75,6 +145,12 @@ images without encoding component-specific paths in the shared action.
           username: $oauthtoken
           password: ${{ secrets.NGC_DSX_COMPONENTS_PUSH_KEY }}
           push: "true"
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Verify published image
+        env:
+          IMAGE_REF: nvcr.io/ORG/TEAM/component:${{ needs.release.outputs.version }}
+        run: scripts/verify-rc-image.sh "$IMAGE_REF" "$GITHUB_SHA"
 ```
 
 ## Helm Job
@@ -86,7 +162,7 @@ version in the job workspace before packaging.
 ```yaml
   publish-chart:
     needs: release
-    if: needs.release.outputs.publish-rc == 'true'
+    if: startsWith(github.ref, 'refs/heads/release/') && needs.release.outputs.publish-rc == 'true'
     runs-on: linux-amd64-cpu4
     environment: components-dev
     permissions:
@@ -95,7 +171,17 @@ version in the job workspace before packaging.
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.release.outputs.tag }}
-      - uses: dsx-ai-factory/dsx-github-actions/.github/actions/helm-package-push@<commit-sha>
+
+      - name: Stamp source revision
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          yq -i \
+            '.annotations = (.annotations // {}) | .annotations."dsx.nvidia.com/source-revision" = strenv(SOURCE_REVISION)' \
+            deploy/component/Chart.yaml
+
+      - name: Publish chart
+        uses: dsx-ai-factory/dsx-github-actions/.github/actions/helm-package-push@<commit-sha>
         with:
           chart-path: deploy/component
           chart-version: ${{ needs.release.outputs.version }}
@@ -103,6 +189,18 @@ version in the job workspace before packaging.
           ngc-key: ${{ secrets.NGC_DSX_COMPONENTS_PUSH_KEY }}
           ngc-path: ORG/TEAM
           ngc-duplicate: skip
+
+      - name: Verify published chart
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          verify_dir="$(mktemp -d "$RUNNER_TEMP/rc-chart.XXXXXX")"
+          helm repo update helm-repo-ngc
+          helm pull helm-repo-ngc/component \
+            --version "$RELEASE_VERSION" --destination "$verify_dir"
+          helm show chart "$verify_dir/component-$RELEASE_VERSION.tgz" \
+            | yq -e '.annotations."dsx.nvidia.com/source-revision" == strenv(EXPECTED_REVISION)'
 ```
 
 ## Reruns
@@ -113,6 +211,13 @@ created. `resolve-release-candidate` handles this by selecting one matching RC
 tag already pointing at `HEAD`. Multiple matching RC tags fail closed because
 the intended artifact version would be ambiguous.
 
-Helm publishing should use `ngc-duplicate: skip`. Image publishing may safely
-retry the same immutable version tag, but consumers should not move or reuse an
-RC tag for a different source commit.
+Expose `reused-existing-tag` for logging and auditing, but do not use it as the
+only rerun condition. A failed first run can leave only some artifacts behind,
+so every artifact job must inspect its own immutable version independently.
+
+Do not rebuild or overwrite an image that already has the RC tag. Stamp images
+with `org.opencontainers.image.revision`; on rerun, verify that every required
+platform has the expected revision and skip a matching image. Stamp Helm charts
+with the same source revision. `ngc-duplicate: skip` is safe only when the
+downloaded existing chart is verified against that revision. End every run by
+checking that all expected images and charts exist at the one resolved version.
