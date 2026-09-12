@@ -28,7 +28,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAMESPACE: nvidia
+  # GITHUB_TOKEN can only push to the owning organization's GHCR namespace.
+  IMAGE_NAMESPACE: ${{ github.repository_owner }}
   IMAGE_PREFIX: dsx-cds-  # Prefix to identify CDS container images
 
 jobs:
@@ -149,7 +150,7 @@ jobs:
 
     # Use the newly built go-dev container with version tag
     container:
-      image: ghcr.io/nvidia/dsx-cds-go-dev-1.24-alpine:${{ needs.get-version.outputs.version }}
+      image: ghcr.io/${{ github.repository_owner }}/dsx-cds-go-dev-1.24-alpine:${{ needs.get-version.outputs.version }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -190,7 +191,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
 
     container:
-      image: ghcr.io/nvidia/dsx-cds-tools:${{ needs.get-version.outputs.version }}
+      image: ghcr.io/${{ github.repository_owner }}/dsx-cds-tools:${{ needs.get-version.outputs.version }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -236,17 +237,17 @@ jobs:
           echo ""
           if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
             echo "✅ Built and pushed 4 container images to GHCR:"
-            echo "  - ghcr.io/nvidia/dsx-cds-tools:${{ needs.get-version.outputs.version }}"
-            echo "  - ghcr.io/nvidia/dsx-cds-grafana-backup-tool:${{ needs.get-version.outputs.version }}"
-            echo "  - ghcr.io/nvidia/dsx-cds-go-dev-1.24-alpine:${{ needs.get-version.outputs.version }}"
-            echo "  - ghcr.io/nvidia/dsx-cds-go-dev-1.24-debian:${{ needs.get-version.outputs.version }}"
+            echo "  - ${REGISTRY}/${IMAGE_NAMESPACE}/${IMAGE_PREFIX}tools:${{ needs.get-version.outputs.version }}"
+            echo "  - ${REGISTRY}/${IMAGE_NAMESPACE}/${IMAGE_PREFIX}grafana-backup-tool:${{ needs.get-version.outputs.version }}"
+            echo "  - ${REGISTRY}/${IMAGE_NAMESPACE}/${IMAGE_PREFIX}go-dev-1.24-alpine:${{ needs.get-version.outputs.version }}"
+            echo "  - ${REGISTRY}/${IMAGE_NAMESPACE}/${IMAGE_PREFIX}go-dev-1.24-debian:${{ needs.get-version.outputs.version }}"
           else
             echo "✅ Built images successfully (not pushed on non-main branches)"
           fi
           echo ""
           echo "📍 Usage example:"
           echo "   container:"
-          echo "     image: ghcr.io/nvidia/dsx-cds-tools:${{ needs.get-version.outputs.version }}"
+          echo "     image: ${REGISTRY}/${IMAGE_NAMESPACE}/${IMAGE_PREFIX}tools:${{ needs.get-version.outputs.version }}"
           echo "     credentials:"
           echo "       username: \${{ github.actor }}"
           echo "       password: \${{ secrets.GITHUB_TOKEN }}"
