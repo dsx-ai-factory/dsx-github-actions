@@ -128,27 +128,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Resolve dsx-github-actions ref
-        id: resolve
-        shell: bash
-        run: |
-          set -euo pipefail
-          # github.workflow_ref example:
-          #   dsx-ai-factory/dsx-github-actions/.github/workflows/docker-build.yml@v1.2.3
-          wf_ref="${GITHUB_WORKFLOW_REF:-}"
-          ref="${wf_ref##*@}"
-          if [[ -z "${ref}" || "${ref}" == "${wf_ref}" ]]; then
-            ref="main"
-          fi
-          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+        with:
+          persist-credentials: false
 
       - name: Checkout dsx-github-actions (for local action)
         uses: actions/checkout@v4
         with:
           repository: dsx-ai-factory/dsx-github-actions
-          ref: ${{ steps.resolve.outputs.ref }}
+          ref: ${{ github.workflow_sha }}
           path: dsx-github-actions
+          persist-credentials: false
 
       - name: Docker build
         id: docker
