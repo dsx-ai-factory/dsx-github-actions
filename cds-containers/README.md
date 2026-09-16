@@ -72,20 +72,20 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: read  # Required to pull from GHCR
-    
+
     container:
       image: ghcr.io/nvidia/dsx-cds-tools:0.0.1
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Build with Bazel
         run: bazel build //...
-      
+
       - name: Deploy with Terraform
         run: |
           terraform init
@@ -101,14 +101,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      
+
       - name: Run build in container
         run: |
           docker run --rm \
@@ -235,11 +235,11 @@ steps:
   # Use Bazel 6.5.0 for KubeVirt or projects requiring compatibility
   - name: Build with Bazel 6
     run: bazel6 build //...
-  
+
   # Use Bazel 8.4.0 explicitly
   - name: Build with Bazel 8
     run: bazel8 build //...
-  
+
   # Use default (currently Bazel 8.4.0)
   - name: Build with default Bazel
     run: bazel build //...
@@ -254,13 +254,13 @@ jobs:
   build:
     container:
       image: ghcr.io/nvidia/dsx-cds-tools:latest
-    
+
     steps:
       - name: Override bazel to use version 6.5.0
         run: |
           ln -sf /usr/local/bin/bazel6 /usr/local/bin/bazel
           bazel --version  # Verify it's 6.5.0
-      
+
       - name: Build (uses Bazel 6.5.0)
         run: make build
 ```
