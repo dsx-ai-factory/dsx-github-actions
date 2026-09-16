@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM ysde/docker-grafana-backup-tool:1.4.2-slim
+FROM ysde/docker-grafana-backup-tool:1.4.2-slim@sha256:910ed45e322aa551bc9663e6c9d69bb79f29060aab488de00c6e589ed971558b
 
 USER 0
 RUN apk add --no-cache git

@@ -17,14 +17,22 @@ name: Build CDS Containers
 
 # Trigger only on pushes to main or copy-pr-bot mirror branches, and only when relevant paths change
 on:
+  pull_request:
+    paths:
+      - 'cds-containers/**'
+      - '.github/workflows/build-cds-containers.yml'
   push:
     branches:
-      - main # Only push images when merging to main
+      - main
       - pull-request/**
     paths:
       - 'cds-containers/**'
       - '.github/workflows/build-cds-containers.yml'
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:
+
+concurrency:
+  group: build-cds-containers-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   REGISTRY: ghcr.io
@@ -32,32 +40,95 @@ env:
   IMAGE_PREFIX: dsx-cds-  # Prefix to identify CDS container images
 
 jobs:
-  # Job 1: Read version from VERSION.md
   get-version:
     runs-on: linux-amd64-cpu4
+    timeout-minutes: 5
     permissions:
       contents: read
     outputs:
       version: ${{ steps.extract-version.outputs.version }}
+      publish: ${{ steps.extract-version.outputs.publish }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Extract version from VERSION
+      - name: Validate and extract version
         id: extract-version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          VERSION=$(cat cds-containers/VERSION | tr -d '[:space:]')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "📌 Container version: $VERSION"
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < cds-containers/VERSION)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "cds-containers/VERSION must contain a semantic version" >&2
+            exit 1
+          fi
 
-  # Job 2: Build and push all container images
+          base_sha="$PUSH_BASE_SHA"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_sha="$PR_BASE_SHA"
+          fi
+
+          version_changed=false
+          if [[ -n "$base_sha" && ! "$base_sha" =~ ^0+$ ]]; then
+            if ! git diff --quiet "$base_sha" "$GITHUB_SHA" -- cds-containers/VERSION; then
+              version_changed=true
+            fi
+            if ! git diff --quiet "$base_sha" "$GITHUB_SHA" -- ':(glob)cds-containers/*/Dockerfile' &&
+               [[ "$version_changed" != "true" ]]; then
+              echo "Container image changes require a VERSION bump" >&2
+              exit 1
+            fi
+          fi
+
+          publish=false
+          if [[ "$EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" &&
+                "$version_changed" == "true" ]]; then
+            publish=true
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "Container version: $version (publish: $publish)"
+
+  check-version-tags:
+    runs-on: linux-amd64-cpu4
+    timeout-minutes: 5
+    permissions:
+      packages: read
+    needs: get-version
+    if: needs.get-version.outputs.publish == 'true'
+    steps:
+      - name: Log in to GitHub Container Registry
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Ensure version tags are unused
+        env:
+          VERSION: ${{ needs.get-version.outputs.version }}
+        run: |
+          for name in tools grafana-backup-tool go-dev-1.24-alpine go-dev-1.24-debian; do
+            image="ghcr.io/nvidia/dsx-cds-${name}:${VERSION}"
+            if docker manifest inspect "$image" >/dev/null 2>&1; then
+              echo "$image already exists; bump cds-containers/VERSION" >&2
+              exit 1
+            fi
+          done
+
   build-and-push-images:
     runs-on: linux-amd64-cpu4
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write  # Required to push to GHCR
-    needs: get-version
+    needs: [get-version, check-version-tags]
+    if: always() && needs.get-version.result == 'success' && (needs.check-version-tags.result == 'success' || needs.check-version-tags.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
@@ -85,7 +156,7 @@ jobs:
           buildkitd-config: /etc/buildkit/buildkitd.toml
 
       - name: Log in to GitHub Container Registry
-        if: github.ref == 'refs/heads/main'
+        if: needs.get-version.outputs.publish == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -98,15 +169,9 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_PREFIX }}${{ matrix.image.name }}
           tags: |
-            # Version from VERSION.md: 0.0.1
-            type=raw,value=${{ needs.get-version.outputs.version }}
-            # Major.minor: 0.0.1 → 0.0
-            type=raw,value=${{ needs.get-version.outputs.version }},enable=true,suffix=-latest
-            # Latest tag
-            type=raw,value=latest
-            # Commit SHA: dev-abc1234 (for testing specific builds)
-            type=sha,prefix=dev-
-            # Branch name (for PR/branch builds)
+            type=raw,value=${{ needs.get-version.outputs.version }},enable=${{ needs.get-version.outputs.publish }}
+            type=raw,value=latest,enable=${{ needs.get-version.outputs.publish }}
+            type=sha,prefix=sha-,format=long
             type=ref,event=branch
             type=ref,event=pr
           labels: |
@@ -115,114 +180,74 @@ jobs:
             org.opencontainers.image.version=${{ needs.get-version.outputs.version }}
 
       - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: ./cds-containers
           file: ${{ matrix.image.path }}/Dockerfile
-          # Only push on main to avoid publishing images from PR mirror branches
-          push: ${{ github.ref == 'refs/heads/main' }}
+          push: ${{ needs.get-version.outputs.publish == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Build summary
+      - name: Test Go development image
+        if: needs.get-version.outputs.publish == 'true' && matrix.image.name == 'go-dev-1.24-alpine'
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_PREFIX }}${{ matrix.image.name }}@${{ steps.build.outputs.digest }}
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            echo "✅ Image built and pushed to GHCR:"
-            echo "${{ steps.meta.outputs.tags }}" | sed 's/^/  - /'
-          else
-            echo "✅ Image built successfully (not pushed in PR)"
-            echo "📦 Tags that would be created:"
-            echo "${{ steps.meta.outputs.tags }}" | sed 's/^/  - /'
-          fi
-
-  # Job 3: Test using the built go-dev image
-  test-go-dev-image:
-    runs-on: linux-amd64-cpu4
-    permissions:
-      contents: read
-      packages: read
-    needs: [get-version, build-and-push-images]
-    # Only run tests when images are pushed (main only)
-    if: github.ref == 'refs/heads/main'
-
-    # Use the newly built go-dev container with version tag
-    container:
-      image: ghcr.io/nvidia/dsx-cds-go-dev-1.24-alpine:${{ needs.get-version.outputs.version }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-
-    steps:
-      - name: Test container tools
-        run: |
-          echo "Testing Go development container (v${{ needs.get-version.outputs.version }})..."
-          go version
-          golangci-lint --version
-          goimports -h || true
-
-          echo ""
-          echo "✅ Go container tools are working!"
-
-      - name: Test building Go code
-        run: |
-          # Create a simple Go program to test
-          cat > hello.go << 'EOF'
+          docker run --rm "$IMAGE" sh -ec '
+            go version
+            golangci-lint --version
+            goimports -h >/dev/null
+          '
+          workdir="$(mktemp -d)"
+          trap 'rm -rf "$workdir"' EXIT
+          cat > "$workdir/hello.go" <<'EOF'
           package main
           import "fmt"
           func main() {
-              fmt.Println("Hello from CDS Go container v${{ needs.get-version.outputs.version }}!")
+              fmt.Println("Hello from the CDS Go container")
           }
           EOF
+          docker run --rm -v "$workdir:/work" -w /work "$IMAGE" sh -ec '
+            go build hello.go
+            ./hello
+          '
 
-          go build hello.go
-          ./hello
-
-  # Job 4: Test using tools container
-  test-tools-image:
-    runs-on: linux-amd64-cpu4
-    permissions:
-      contents: read
-      packages: read
-    needs: [get-version, build-and-push-images]
-    # Only run tests when images are pushed (main only)
-    if: github.ref == 'refs/heads/main'
-
-    container:
-      image: ghcr.io/nvidia/dsx-cds-tools:${{ needs.get-version.outputs.version }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-
-    steps:
-      - name: Test tools container
+      - name: Test tools image
+        if: needs.get-version.outputs.publish == 'true' && matrix.image.name == 'tools'
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_PREFIX }}${{ matrix.image.name }}@${{ steps.build.outputs.digest }}
         run: |
-          echo "Testing CDS tools container (v${{ needs.get-version.outputs.version }})..."
-          echo ""
+          docker run --rm "$IMAGE" sh -ec '
+            bazel --version
+            bazel6 --version
+            bazel8 --version
+            kubectl version --client
+            helm version --short
+            terraform version
+            terragrunt --version
+            ngc version
+            yq --version
+            node --version
+            python3 --version
+            uv --version
+          '
 
-          echo "🔧 Tool versions:"
-          echo "  - Bazel (default): $(bazel --version)"
-          echo "  - Bazel 6: $(bazel6 --version)"
-          echo "  - Bazel 8: $(bazel8 --version)"
-          echo "  - Kubectl: $(kubectl version --client --short 2>/dev/null || kubectl version --client)"
-          echo "  - Helm: $(helm version --short)"
-          echo "  - Terraform: $(terraform version -json | jq -r '.terraform_version')"
-          echo "  - Terragrunt: $(terragrunt --version)"
-          echo "  - NGC CLI: $(ngc version --json | jq -r '.version')"
-          echo "  - YQ: $(yq --version)"
-          echo "  - Node.js: $(node --version)"
-          echo "  - Python: $(python3 --version)"
-          echo "  - UV: $(uv --version)"
-          echo ""
-          echo "✅ All tools are working!"
-
-  # Job 5: Summary
+      - name: Build summary
+        run: |
+          if [ "${{ needs.get-version.outputs.publish }}" = "true" ]; then
+            echo "Image built, tested by digest when applicable, and pushed to GHCR:"
+          else
+            echo "Image built successfully without publishing."
+          fi
   summary:
     runs-on: linux-amd64-cpu4
+    timeout-minutes: 5
     permissions:
       contents: read
-    needs: [get-version, build-and-push-images, test-go-dev-image, test-tools-image]
+    needs: [get-version, build-and-push-images]
     if: always()
 
     steps:
@@ -234,7 +259,7 @@ jobs:
           echo "🔨 Trigger: ${{ github.event_name }}"
           echo "📌 Commit: ${{ github.sha }}"
           echo ""
-          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+          if [[ "${{ needs.get-version.outputs.publish }}" == "true" ]]; then
             echo "✅ Built and pushed 4 container images to GHCR:"
             echo "  - ghcr.io/nvidia/dsx-cds-tools:${{ needs.get-version.outputs.version }}"
             echo "  - ghcr.io/nvidia/dsx-cds-grafana-backup-tool:${{ needs.get-version.outputs.version }}"
@@ -246,7 +271,7 @@ jobs:
           echo ""
           echo "📍 Usage example:"
           echo "   container:"
-          echo "     image: ghcr.io/nvidia/dsx-cds-tools:${{ needs.get-version.outputs.version }}"
+          echo "     image: ghcr.io/nvidia/dsx-cds-tools:sha-${{ github.sha }}"
           echo "     credentials:"
           echo "       username: \${{ github.actor }}"
           echo "       password: \${{ secrets.GITHUB_TOKEN }}"

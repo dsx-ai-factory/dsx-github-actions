@@ -11,7 +11,7 @@ Container images for CDS tooling, optimized for GitHub Actions workflows. These 
 ### 1. `cds-tools` - CDS Tools Container
 Comprehensive tooling for infrastructure automation, CI/CD, and Kubernetes operations.
 
-**Image**: `ghcr.io/nvidia/dsx-cds-tools:latest`
+**Image**: `ghcr.io/nvidia/dsx-cds-tools:0.0.2`
 
 **Includes**:
 - **Bazel** (multiple versions):
@@ -29,12 +29,12 @@ Comprehensive tooling for infrastructure automation, CI/CD, and Kubernetes opera
 ### 2. `cds-grafana-backup-tool`
 Specialized container for backing up Grafana instances.
 
-**Image**: `ghcr.io/nvidia/dsx-cds-grafana-backup-tool:latest`
+**Image**: `ghcr.io/nvidia/dsx-cds-grafana-backup-tool:0.0.2`
 
 ### 3. `cds-go-dev-1.24-alpine` - Go Development (Alpine)
 Lightweight Go 1.24 development environment with essential tooling.
 
-**Image**: `ghcr.io/nvidia/dsx-cds-go-dev-1.24-alpine:latest`
+**Image**: `ghcr.io/nvidia/dsx-cds-go-dev-1.24-alpine:0.0.2`
 
 **Includes**:
 - Go 1.24.3 (Alpine-based)
@@ -51,7 +51,7 @@ Lightweight Go 1.24 development environment with essential tooling.
 ### 4. `cds-go-dev-1.24-debian` - Go Development (Debian)
 Full-featured Go 1.24 environment with better C library compatibility.
 
-**Image**: `ghcr.io/nvidia/dsx-cds-go-dev-1.24-debian:latest`
+**Image**: `ghcr.io/nvidia/dsx-cds-go-dev-1.24-debian:0.0.2`
 
 **Size**: ~300MB+
 
@@ -72,20 +72,20 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: read  # Required to pull from GHCR
-    
+
     container:
-      image: ghcr.io/nvidia/dsx-cds-tools:0.0.1
+      image: ghcr.io/nvidia/dsx-cds-tools:0.0.2
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Build with Bazel
         run: bazel build //...
-      
+
       - name: Deploy with Terraform
         run: |
           terraform init
@@ -101,14 +101,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      
+
       - name: Run build in container
         run: |
           docker run --rm \
@@ -121,7 +121,7 @@ jobs:
 ### Method 3: Building Custom Image Based on CDS Containers
 
 ```dockerfile
-FROM ghcr.io/nvidia/dsx-cds-tools:0.0.1
+FROM ghcr.io/nvidia/dsx-cds-tools:0.0.2
 
 # Add your custom tools
 RUN apt-get update && apt-get install -y \
@@ -154,9 +154,20 @@ WORKDIR /app
 ## 🏗️ Versioning and Updates
 
 ### Current Version
-The current version is defined in [`VERSION`](./VERSION): **0.0.1**
+The current version is defined in [`VERSION`](./VERSION): **0.0.2**
 
 This file contains only the semantic version number (e.g., `0.0.1`).
+
+Version tags and `sha-<40-character-commit-sha>` tags are immutable. The
+publishing workflow refuses to overwrite an existing version tag, so every
+image-content change requires a `VERSION` bump. The `latest` tag is mutable and
+must not be used when reproducibility matters. Pinning the published digest is
+the strongest reference:
+
+```yaml
+container:
+  image: ghcr.io/nvidia/dsx-cds-tools@sha256:<digest>
+```
 
 ### Updating Containers
 
@@ -174,7 +185,7 @@ When you need to update tools or fix issues:
    git push
    ```
 4. **Pipeline auto-triggers** - Only runs when `cds-containers/` files change
-5. **Images are tagged** with the version from VERSION.md
+5. **Images are tagged** with the version from `VERSION` and the full commit SHA
 
 **Version Bumping**:
 - **PATCH** (0.0.1 → 0.0.2): Bug fixes, base image updates
@@ -198,7 +209,8 @@ git push
 
 # Pipeline runs automatically, creates:
 # - ghcr.io/nvidia/dsx-cds-tools:0.1.0
-# - ghcr.io/nvidia/dsx-cds-tools:latest
+# - ghcr.io/nvidia/dsx-cds-tools:sha-<40-character-commit-sha>
+# - ghcr.io/nvidia/dsx-cds-tools:latest (mutable)
 ```
 
 ---
@@ -235,11 +247,11 @@ steps:
   # Use Bazel 6.5.0 for KubeVirt or projects requiring compatibility
   - name: Build with Bazel 6
     run: bazel6 build //...
-  
+
   # Use Bazel 8.4.0 explicitly
   - name: Build with Bazel 8
     run: bazel8 build //...
-  
+
   # Use default (currently Bazel 8.4.0)
   - name: Build with default Bazel
     run: bazel build //...
@@ -254,13 +266,13 @@ jobs:
   build:
     container:
       image: ghcr.io/nvidia/dsx-cds-tools:latest
-    
+
     steps:
       - name: Override bazel to use version 6.5.0
         run: |
           ln -sf /usr/local/bin/bazel6 /usr/local/bin/bazel
           bazel --version  # Verify it's 6.5.0
-      
+
       - name: Build (uses Bazel 6.5.0)
         run: make build
 ```
@@ -321,5 +333,5 @@ docker run --rm test-cds-tools bazel --version
 
 - **No internal tools**: `nvault` and `cds-cli` are not included as GitHub runners cannot reach internal NVIDIA resources
 - **For internal use**: Use GitLab version at `registry.gitlab-master.nvidia.com/cds/cds-containers/tools`
-- **Version-based tagging**: Images are tagged with versions from `VERSION`, not Git tags
+- **Immutable tagging**: Use a version, full commit SHA tag, or digest; `latest` is mutable
 - **Path-filtered pipeline**: Only changes to `cds-containers/` folder trigger builds
