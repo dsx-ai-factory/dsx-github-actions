@@ -64,7 +64,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: CodeQL Analysis
-        uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@main
+        uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
         with:
           languages: "rust"
           build-command: "cargo build --workspace"
@@ -74,7 +74,7 @@ jobs:
 
 ```yaml
 - name: CodeQL Analysis
-  uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@main
+  uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
   with:
     languages: "go"
     build-command: "go build ./..."
@@ -93,7 +93,7 @@ on:
 
 jobs:
   promote:
-    uses: dsx-ai-factory/dsx-github-actions/.github/workflows/promote-image.yml@main
+    uses: dsx-ai-factory/dsx-github-actions/.github/workflows/promote-image.yml@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
     with:
       source: nvcr.io/acme/dev/service
       source_tag: faf3d1
@@ -145,26 +145,26 @@ This repository uses **automatic semantic versioning**. Tags are automatically c
 
 ### Recommended Approaches
 
-#### 1. Pin to Specific Commit SHA (Recommended by NVIDIA Security Guidence)
+#### 1. Pin to Specific Commit SHA (Supported for Production)
 
 Maximum stability and security - the target action never changes:
 
 ```yaml
-uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@55d1e0af17fb4431edaca19fbd5c78fecd29d18a
+uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
 ```
 
-✅ **Best for**: Production, CI/CD pipelines
+✅ **Use for**: Production and CI/CD pipelines
 ⚠️ **Note**: Won't receive bug fixes or new features automatically
 
 #### 2. Pin to Specific Version
 
-Maximum stability - version never changes:
+Readable release reference:
 
 ```yaml
 uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@v1.2.3
 ```
 
-✅ **Best for**: Production, CI/CD pipelines
+⚠️ **Use for**: Development and evaluation
 ⚠️ **Note**: Won't receive bug fixes or new features automatically
 
 #### 3. Pin to Major Version
@@ -175,9 +175,9 @@ Get patches and features, avoid breaking changes:
 uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@v1
 ```
 
-✅ **Best for**: Most use cases
+⚠️ **Use for**: Development and evaluation
 📦 **Updates**: Automatically gets `v1.x.x` updates
-🛡️ **Safety**: Won't update to `v2.0.0` (breaking changes)
+⚠️ **Risk**: The tag is force-updated after every release in the major version
 
 #### 4. Use Latest Main
 
@@ -264,7 +264,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@main
+      - uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
         with:
           languages: "rust"
           build-command: "cargo build --workspace"
@@ -287,7 +287,7 @@ jobs:
 
       # Scan for secrets in source code
       - name: Secret Scan
-        uses: dsx-ai-factory/dsx-github-actions/.github/actions/trufflehog-scan@main
+        uses: dsx-ai-factory/dsx-github-actions/.github/actions/trufflehog-scan@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
         with:
           post-pr-comment: "true"
 
