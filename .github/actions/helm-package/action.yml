@@ -48,8 +48,8 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - uses: dcarbone/install-jq-action@v1.0.1
-    - uses: dcarbone/install-yq-action@v1.1.1
+    - uses: dcarbone/install-jq-action@91d8da7268538e8a0ae0c8b72af44f1763228455 # v1.0.1
+    - uses: dcarbone/install-yq-action@64b1b9eb28920bb1a4c13c05321df284f9a8f940 # v1.1.1
 
     - name: Install Helm
       shell: bash
