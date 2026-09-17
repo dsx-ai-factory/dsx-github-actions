@@ -109,9 +109,11 @@ file: leave them unset when the file is your source of truth.
 
 ### 3. Add the Workflow and Publishing Jobs
 
-Use the [Release Job](#release-job) below as an RC-only workflow, or integrate
-it into your existing release workflow. Then add the [Image Job](#image-job)
-and [Helm Job](#helm-job) under the same `jobs` mapping. Those publishing blocks
+Use the [Release Job](#release-job) below as a separate RC-only workflow in
+`.github/workflows/release-rc.yml`. Keep your stable-release workflow separate
+and exclude this release branch from its triggers. Then add the
+[Image Job](#image-job) and [Helm Job](#helm-job) under the RC workflow's `jobs`
+mapping. Those publishing blocks
 are templates: replace the component paths, registry destination and verifier
 with your repository's values before enabling them.
 
@@ -164,10 +166,11 @@ validate the resulting workflow in your own repository before enabling it.
 ## Release Job
 
 This is a complete RC-only workflow for `.github/workflows/release-rc.yml`.
-Replace the branch and runner for your component. If integrating into an
-existing file, preserve its stable-release behavior instead of running both
-workflows on the same release branch. Keep the checkout's full tag history so
-version calculation and reruns work.
+Replace the branch and runner for your component. Do not add stable-only steps
+such as `Update Major Version Tag`: `new-release-published == 'true'` also
+applies to RCs, so that condition alone must not update a stable moving tag such
+as `v2`. Leave those steps in the separate stable-release workflow. Keep the
+checkout's full tag history so version calculation and reruns work.
 
 ```yaml
 name: Release Candidate
