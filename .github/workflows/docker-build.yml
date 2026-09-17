@@ -131,11 +131,18 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Require reusable workflow SHA
+        if: ${{ job.workflow_sha == '' }}
+        shell: bash
+        run: |
+          echo "::error::Reusable workflow SHA is unavailable"
+          exit 1
+
       - name: Checkout dsx-github-actions (for local action)
         uses: actions/checkout@v4
         with:
           repository: dsx-ai-factory/dsx-github-actions
-          ref: ${{ github.workflow_sha }}
+          ref: ${{ job.workflow_sha }}
           path: dsx-github-actions
           persist-credentials: false
 
