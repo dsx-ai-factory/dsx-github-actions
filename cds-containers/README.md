@@ -11,7 +11,7 @@ Container images for CDS tooling, optimized for GitHub Actions workflows. These 
 ### 1. `cds-tools` - CDS Tools Container
 Comprehensive tooling for infrastructure automation, CI/CD, and Kubernetes operations.
 
-**Image**: `ghcr.io/nvidia/dsx-cds-tools:latest`
+**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-tools:latest`
 
 **Includes**:
 - **Bazel** (multiple versions):
@@ -26,15 +26,10 @@ Comprehensive tooling for infrastructure automation, CI/CD, and Kubernetes opera
 
 **Size**: ~500MB
 
-### 2. `cds-grafana-backup-tool`
-Specialized container for backing up Grafana instances.
-
-**Image**: `ghcr.io/nvidia/dsx-cds-grafana-backup-tool:latest`
-
-### 3. `cds-go-dev-1.24-alpine` - Go Development (Alpine)
+### 2. `cds-go-dev-1.24-alpine` - Go Development (Alpine)
 Lightweight Go 1.24 development environment with essential tooling.
 
-**Image**: `ghcr.io/nvidia/dsx-cds-go-dev-1.24-alpine:latest`
+**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:latest`
 
 **Includes**:
 - Go 1.24.3 (Alpine-based)
@@ -48,10 +43,10 @@ Lightweight Go 1.24 development environment with essential tooling.
 
 **Use when**: You need a minimal, fast container for Go development and CI.
 
-### 4. `cds-go-dev-1.24-debian` - Go Development (Debian)
+### 3. `cds-go-dev-1.24-debian` - Go Development (Debian)
 Full-featured Go 1.24 environment with better C library compatibility.
 
-**Image**: `ghcr.io/nvidia/dsx-cds-go-dev-1.24-debian:latest`
+**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-debian:latest`
 
 **Size**: ~300MB+
 
@@ -74,7 +69,7 @@ jobs:
       packages: read  # Required to pull from GHCR
 
     container:
-      image: ghcr.io/nvidia/dsx-cds-tools:0.0.1
+      image: ghcr.io/dsx-ai-factory/dsx-cds-tools:0.0.1
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -114,14 +109,14 @@ jobs:
           docker run --rm \
             -v $PWD:/workspace \
             -w /workspace \
-            ghcr.io/nvidia/dsx-cds-go-dev-1.24-alpine:latest \
+            ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:latest \
             go build ./...
 ```
 
 ### Method 3: Building Custom Image Based on CDS Containers
 
 ```dockerfile
-FROM ghcr.io/nvidia/dsx-cds-tools:0.0.1
+FROM ghcr.io/dsx-ai-factory/dsx-cds-tools:0.0.1
 
 # Add your custom tools
 RUN apt-get update && apt-get install -y \
@@ -197,8 +192,8 @@ Bump version to 0.1.0"
 git push
 
 # Pipeline runs automatically, creates:
-# - ghcr.io/nvidia/dsx-cds-tools:0.1.0
-# - ghcr.io/nvidia/dsx-cds-tools:latest
+# - ghcr.io/dsx-ai-factory/dsx-cds-tools:0.1.0
+# - ghcr.io/dsx-ai-factory/dsx-cds-tools:latest
 ```
 
 ---
@@ -209,8 +204,8 @@ git push
 
 | GitLab Registry | GitHub GHCR |
 |-----------------|-------------|
-| `registry.gitlab-master.nvidia.com/cds/cds-containers/tools:latest` | `ghcr.io/nvidia/dsx-cds-tools:latest` |
-| `registry.gitlab-master.nvidia.com/cds/cds-containers/go-dev-1.24-alpine:1.0.0` | `ghcr.io/nvidia/dsx-cds-go-dev-1.24-alpine:0.0.1` |
+| `registry.gitlab-master.nvidia.com/cds/cds-containers/tools:latest` | `ghcr.io/dsx-ai-factory/dsx-cds-tools:latest` |
+| `registry.gitlab-master.nvidia.com/cds/cds-containers/go-dev-1.24-alpine:1.0.0` | `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:0.0.1` |
 
 ### Key Differences
 
@@ -253,7 +248,7 @@ If your Makefile uses `bazel` commands directly, override the default:
 jobs:
   build:
     container:
-      image: ghcr.io/nvidia/dsx-cds-tools:latest
+      image: ghcr.io/dsx-ai-factory/dsx-cds-tools:latest
 
     steps:
       - name: Override bazel to use version 6.5.0
