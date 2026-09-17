@@ -305,7 +305,7 @@ jobs:
 
 ## 🧹 Developer Workflow
 
-This repository ships with a [`pre-commit`](https://pre-commit.com/) configuration to lint YAML, trim whitespace, run ShellCheck on shell scripts, and execute `actionlint` against GitHub workflows. Pull request CI runs the same checks and the release-candidate resolver tests.
+This repository ships with a [`pre-commit`](https://pre-commit.com/) configuration to lint YAML, trim whitespace, run ShellCheck on shell scripts, and execute `actionlint` against GitHub workflows. CI runs the same checks and the release-candidate resolver tests on pushes to `main` and copy-pr-bot's `pull-request/**` mirror branches.
 
 1. Install `pre-commit` (pick one)
    - `pipx install pre-commit`

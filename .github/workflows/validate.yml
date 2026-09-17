@@ -4,10 +4,10 @@
 name: Validate
 
 on:
-  pull_request:
   push:
     branches:
       - main
+      - 'pull-request/**'
 
 permissions:
   contents: read
