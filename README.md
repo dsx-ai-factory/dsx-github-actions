@@ -46,6 +46,14 @@ Without GHAS enabled, scans will run successfully but uploads will fail. See ind
 
 ## 📖 Quick Start
 
+### Enable Release Candidates for Your Component
+
+Follow the [RC onboarding guide](docs/release-candidate-publishing.md) to add
+protected release branches, `vX.Y.Z-rc.N` tags and matching NGC images/charts.
+It uses **dsx-exchange** as a worked example and includes setup, tag behavior,
+first-release checks, safe reruns and the handoff to an SBOM.
+Start with [Onboard Your Repository](docs/release-candidate-publishing.md#onboard-your-repository).
+
 ### Security Scanning (Rust)
 
 ```yaml
@@ -64,7 +72,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: CodeQL Analysis
-        uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@main
+        uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
         with:
           languages: "rust"
           build-command: "cargo build --workspace"
@@ -74,7 +82,7 @@ jobs:
 
 ```yaml
 - name: CodeQL Analysis
-  uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@main
+  uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
   with:
     languages: "go"
     build-command: "go build ./..."
@@ -93,7 +101,7 @@ on:
 
 jobs:
   promote:
-    uses: dsx-ai-factory/dsx-github-actions/.github/workflows/promote-image.yml@main
+    uses: dsx-ai-factory/dsx-github-actions/.github/workflows/promote-image.yml@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
     with:
       source: nvcr.io/acme/dev/service
       source_tag: faf3d1
@@ -137,34 +145,34 @@ This reusable workflow wraps `skopeo copy`, so it copies the entire manifest lis
 - ✅ **PR Comments**: Automated security findings on pull requests
 - ✅ **Configurable**: Extensive input parameters for customization
 - ✅ **Well-documented**: Comprehensive README for each action
-- ✅ **Automatic Versioning**: Semantic releases on every commit
+- ✅ **Automatic Versioning**: Semantic releases for release-worthy changes
 
 ## 📦 Version Pinning
 
-This repository uses **automatic semantic versioning**. Tags are automatically created on every push to `main` using [Conventional Commits](https://www.conventionalcommits.org/).
+This repository uses **automatic semantic versioning**. Pushes to `main` are evaluated using [Conventional Commits](https://www.conventionalcommits.org/); a tag is created only when the changes warrant a release.
 
 ### Recommended Approaches
 
-#### 1. Pin to Specific Commit SHA (Recommended by NVIDIA Security Guidence)
+#### 1. Pin to Specific Commit SHA (Supported for Production)
 
 Maximum stability and security - the target action never changes:
 
 ```yaml
-uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@55d1e0af17fb4431edaca19fbd5c78fecd29d18a
+uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
 ```
 
-✅ **Best for**: Production, CI/CD pipelines
+✅ **Use for**: Production and CI/CD pipelines
 ⚠️ **Note**: Won't receive bug fixes or new features automatically
 
 #### 2. Pin to Specific Version
 
-Maximum stability - version never changes:
+Readable release reference:
 
 ```yaml
 uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@v1.2.3
 ```
 
-✅ **Best for**: Production, CI/CD pipelines
+⚠️ **Use for**: Development and evaluation
 ⚠️ **Note**: Won't receive bug fixes or new features automatically
 
 #### 3. Pin to Major Version
@@ -175,9 +183,9 @@ Get patches and features, avoid breaking changes:
 uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@v1
 ```
 
-✅ **Best for**: Most use cases
+⚠️ **Use for**: Development and evaluation
 📦 **Updates**: Automatically gets `v1.x.x` updates
-🛡️ **Safety**: Won't update to `v2.0.0` (breaking changes)
+⚠️ **Risk**: The tag is force-updated after every release in the major version
 
 #### 4. Use Latest Main
 
@@ -211,7 +219,7 @@ git ls-remote --tags https://github.com/dsx-ai-factory/dsx-github-actions.git
 
 This repository uses automatic semantic versioning:
 
-- 🤖 **Automated**: Tags are created automatically on push to `main`
+- 🤖 **Automated**: Release-worthy changes on `main` create tags automatically
 - 📝 **Conventional Commits**: Version bumps based on commit messages
 - 📦 **Dual Tags**: Both specific (`v1.2.3`) and major (`v1`) tags are created
 
@@ -264,7 +272,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@main
+      - uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
         with:
           languages: "rust"
           build-command: "cargo build --workspace"
@@ -287,7 +295,7 @@ jobs:
 
       # Scan for secrets in source code
       - name: Secret Scan
-        uses: dsx-ai-factory/dsx-github-actions/.github/actions/trufflehog-scan@main
+        uses: dsx-ai-factory/dsx-github-actions/.github/actions/trufflehog-scan@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
         with:
           post-pr-comment: "true"
 
@@ -297,7 +305,7 @@ jobs:
 
 ## 🧹 Developer Workflow
 
-This repository ships with a [`pre-commit`](https://pre-commit.com/) configuration to lint YAML, trim whitespace, run ShellCheck on shell scripts, and execute `actionlint` against GitHub workflows before every commit.
+This repository ships with a [`pre-commit`](https://pre-commit.com/) configuration to lint YAML, trim whitespace, run ShellCheck on shell scripts, and execute `actionlint` against GitHub workflows. CI runs the same checks and the release-candidate resolver tests on pushes to `main` and copy-pr-bot's `pull-request/**` mirror branches.
 
 1. Install `pre-commit` (pick one)
    - `pipx install pre-commit`

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG BASE_IMAGE="nvcr.io/nvidia/base/ubuntu:22.04_20240212"
+ARG BASE_IMAGE="nvcr.io/nvidia/base/ubuntu:22.04_20240212@sha256:2a9f71d82aa4daac444c1b4b74d5d7b01f93eb23662c1236f89d817f083abecd"
 FROM ${BASE_IMAGE}
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
@@ -162,7 +162,7 @@ RUN ln -s /usr/local/bin/bazel8 /usr/local/bin/bazel \
     && bazel --version
 
 # uv (latest version: 0.11.7)
-COPY --from=ghcr.io/astral-sh/uv:0.11.7 /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.11.7@sha256:240fb85ab0f263ef12f492d8476aa3a2e4e1e333f7d67fbdd923d00a506a516a /uv /uvx /usr/local/bin/
 RUN uv self version
 
 # Note: CDS CLI is not included as GitHub runners cannot reach internal GitLab

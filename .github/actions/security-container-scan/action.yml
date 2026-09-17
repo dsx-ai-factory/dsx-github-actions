@@ -217,7 +217,7 @@ runs:
 
     - name: Upload Grype reports
       if: ${{ inputs.upload-artifact == 'true' && steps.precheck.outputs.image_exists == 'true' }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: ${{ inputs.artifact-name }}
         # if-no-files-found: ignore defensively covers the case where Grype

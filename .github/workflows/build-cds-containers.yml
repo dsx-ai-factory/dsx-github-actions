@@ -15,13 +15,8 @@
 
 name: Build CDS Containers
 
-# pull_request jobs run on GitHub-hosted runners. NVIDIA self-hosted runners
-# reject pull_request events until copy-pr-bot has vetted the PR.
+# Trigger only on pushes to main or copy-pr-bot mirror branches, and only when relevant paths change
 on:
-  pull_request:
-    paths:
-      - 'cds-containers/**'
-      - '.github/workflows/build-cds-containers.yml'
   push:
     branches:
       - main
@@ -29,20 +24,27 @@ on:
     paths:
       - 'cds-containers/**'
       - '.github/workflows/build-cds-containers.yml'
+      - '.github/scripts/check_cds_tags.py'
   workflow_dispatch:
 
 concurrency:
   group: build-cds-containers-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Keep pending releases; the default single pending slot replaces older runs.
+  queue: max
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAMESPACE: nvidia
+  IMAGE_NAMESPACE: dsx-ai-factory
   IMAGE_PREFIX: dsx-cds-  # Prefix to identify CDS container images
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   get-version:
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'linux-amd64-cpu4' }}
+    runs-on: linux-amd64-cpu4
     timeout-minutes: 5
     permissions:
       contents: read
@@ -52,7 +54,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
@@ -61,7 +63,6 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PUSH_BASE_SHA: ${{ github.event.before }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           version="$(tr -d '[:space:]' < cds-containers/VERSION)"
@@ -70,21 +71,27 @@ jobs:
             exit 1
           fi
 
-          base_sha="$PUSH_BASE_SHA"
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            base_sha="$PR_BASE_SHA"
-          fi
-
-          version_changed=false
-          if [[ -n "$base_sha" && ! "$base_sha" =~ ^0+$ ]]; then
-            if ! git diff --quiet "$base_sha" "$GITHUB_SHA" -- cds-containers/VERSION; then
-              version_changed=true
-            fi
-            if ! git diff --quiet "$base_sha" "$GITHUB_SHA" -- ':(glob)cds-containers/*/Dockerfile' &&
-               [[ "$version_changed" != "true" ]]; then
-              echo "Container image changes require a VERSION bump" >&2
+          if [[ "$EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            base_sha="$PUSH_BASE_SHA"
+            if [[ ! "$base_sha" =~ ^[0-9a-f]{40}$ || "$base_sha" =~ ^0+$ ]]; then
+              echo "Cannot determine the previous main commit" >&2
               exit 1
             fi
+          else
+            # A newly created copy-pr-bot branch has an all-zero event.before.
+            base_sha="$(git merge-base "$GITHUB_SHA" origin/main)"
+          fi
+          git rev-parse --verify "${base_sha}^{commit}" >/dev/null
+          base_version="$(git show "$base_sha:cds-containers/VERSION" | tr -d '[:space:]')"
+          image_changes="$(git diff --name-only "$base_sha" "$GITHUB_SHA" -- \
+            cds-containers/tools/ cds-containers/go-dev-1.24-alpine/ cds-containers/go-dev-1.24-debian/)"
+          version_changed=false
+          if [[ "$version" != "$base_version" ]]; then
+            version_changed=true
+          fi
+          if [[ -n "$image_changes" && "$version_changed" != "true" ]]; then
+            echo "Container image changes require a VERSION bump" >&2
+            exit 1
           fi
 
           publish=false
@@ -97,39 +104,13 @@ jobs:
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "Container version: $version (publish: $publish)"
 
-  check-version-tags:
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'linux-amd64-cpu4' }}
-    timeout-minutes: 5
-    permissions:
-      packages: read
-    needs: get-version
-    if: needs.get-version.outputs.publish == 'true'
-    steps:
-      - name: Log in to GitHub Container Registry
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      - name: Ensure version tags are unused
-        env:
-          VERSION: ${{ needs.get-version.outputs.version }}
-        run: |
-          for name in tools grafana-backup-tool go-dev-1.24-alpine go-dev-1.24-debian; do
-            image="ghcr.io/nvidia/dsx-cds-${name}:${VERSION}"
-            if docker manifest inspect "$image" >/dev/null 2>&1; then
-              echo "$image already exists; bump cds-containers/VERSION" >&2
-              exit 1
-            fi
-          done
-
-  build-and-push-images:
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'linux-amd64-cpu4' }}
+  build-and-test-images:
+    runs-on: linux-amd64-cpu4
     timeout-minutes: 45
     permissions:
       contents: read
       packages: write  # Required to push to GHCR
-    needs: [get-version, check-version-tags]
-    if: always() && needs.get-version.result == 'success' && (needs.check-version-tags.result == 'success' || needs.check-version-tags.result == 'skipped')
+    needs: get-version
     strategy:
       fail-fast: false
       matrix:
@@ -137,9 +118,6 @@ jobs:
           - name: tools
             path: cds-containers/tools
             description: "CDS tools container with Bazel, Terraform, Helm, kubectl, NGC CLI, etc."
-          - name: grafana-backup-tool
-            path: cds-containers/grafana-backup-tool
-            description: "Grafana backup tool container"
           - name: go-dev-1.24-alpine
             path: cds-containers/go-dev-1.24-alpine
             description: "Go 1.24 development container (Alpine-based, minimal size)"
@@ -149,21 +127,16 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Docker Buildx
-        if: github.event_name == 'pull_request'
-        uses: docker/setup-buildx-action@v3
-
-      - name: Set up Docker Buildx
-        if: github.event_name != 'pull_request'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
         with:
           buildkitd-config: /etc/buildkit/buildkitd.toml
 
       - name: Log in to GitHub Container Registry
         if: needs.get-version.outputs.publish == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -171,60 +144,74 @@ jobs:
 
       - name: Extract metadata (tags, labels)
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_PREFIX }}${{ matrix.image.name }}
           tags: |
-            type=raw,value=${{ needs.get-version.outputs.version }},enable=${{ needs.get-version.outputs.publish }}
-            type=raw,value=latest,enable=${{ needs.get-version.outputs.publish }}
-            type=sha,prefix=sha-,format=long
-            type=ref,event=branch
-            type=ref,event=pr
+            type=raw,value=build-${{ github.run_id }}-${{ github.run_attempt }}
+          flavor: latest=false
           labels: |
             org.opencontainers.image.description=${{ matrix.image.description }}
             org.opencontainers.image.vendor=NVIDIA
             org.opencontainers.image.version=${{ needs.get-version.outputs.version }}
 
-      - name: Build and push Docker image
+      - name: Build image for testing
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: ./cds-containers
           file: ${{ matrix.image.path }}/Dockerfile
           push: ${{ needs.get-version.outputs.publish == 'true' }}
+          load: ${{ needs.get-version.outputs.publish != 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Test Go development image
-        if: needs.get-version.outputs.publish == 'true' && matrix.image.name == 'go-dev-1.24-alpine'
+      - name: Select the exact built image
+        id: test-image
         env:
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_PREFIX }}${{ matrix.image.name }}@${{ steps.build.outputs.digest }}
+          PUBLISH: ${{ needs.get-version.outputs.publish }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_PREFIX }}${{ matrix.image.name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_ID: ${{ steps.build.outputs.imageid }}
+        run: |
+          if [[ "$PUBLISH" == "true" ]]; then
+            [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+            echo "image=$IMAGE@$DIGEST" >> "$GITHUB_OUTPUT"
+          else
+            [[ "$IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
+            echo "image=$IMAGE_ID" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Test Go development image
+        if: startsWith(matrix.image.name, 'go-dev-')
+        env:
+          IMAGE: ${{ steps.test-image.outputs.image }}
         run: |
           docker run --rm "$IMAGE" sh -ec '
             go version
             golangci-lint --version
             goimports -h >/dev/null
           '
-          workdir="$(mktemp -d)"
-          trap 'rm -rf "$workdir"' EXIT
-          cat > "$workdir/hello.go" <<'EOF'
+          docker run --rm -i "$IMAGE" sh -ec '
+            workdir="$(mktemp -d)"
+            cd "$workdir"
+            cat > hello.go
+            go build hello.go
+            ./hello
+          ' <<'EOF'
           package main
           import "fmt"
           func main() {
               fmt.Println("Hello from the CDS Go container")
           }
           EOF
-          docker run --rm -v "$workdir:/work" -w /work "$IMAGE" sh -ec '
-            go build hello.go
-            ./hello
-          '
 
       - name: Test tools image
-        if: needs.get-version.outputs.publish == 'true' && matrix.image.name == 'tools'
+        if: matrix.image.name == 'tools'
         env:
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_PREFIX }}${{ matrix.image.name }}@${{ steps.build.outputs.digest }}
+          IMAGE: ${{ steps.test-image.outputs.image }}
         run: |
           docker run --rm "$IMAGE" sh -ec '
             bazel --version
@@ -241,45 +228,124 @@ jobs:
             uv --version
           '
 
-      - name: Build summary
+      - name: Record tested digest
+        if: needs.get-version.outputs.publish == 'true'
+        env:
+          IMAGE_NAME: ${{ matrix.image.name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          if [ "${{ needs.get-version.outputs.publish }}" = "true" ]; then
-            echo "Image built, tested by digest when applicable, and pushed to GHCR:"
-          else
-            echo "Image built successfully without publishing."
-          fi
+          mkdir -p digests
+          printf '%s\n' "$DIGEST" > "digests/$IMAGE_NAME"
+
+      - name: Upload tested digest
+        if: needs.get-version.outputs.publish == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cds-digest-${{ matrix.image.name }}
+          path: digests/${{ matrix.image.name }}
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+  publish-images:
+    runs-on: linux-amd64-cpu4
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    needs: [get-version, build-and-test-images]
+    if: needs.get-version.outputs.publish == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Download tested digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: cds-digest-*
+          path: digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          buildkitd-config: /etc/buildkit/buildkitd.toml
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Ensure all release tags are unused
+        env:
+          VERSION: ${{ needs.get-version.outputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for name in tools go-dev-1.24-alpine go-dev-1.24-debian; do
+            digest="$(cat "digests/$name")"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            python3 .github/scripts/check_cds_tags.py \
+              "$REGISTRY/$IMAGE_NAMESPACE/$IMAGE_PREFIX$name" "$VERSION" "sha-$GITHUB_SHA"
+          done
+
+      - name: Promote tested digests to release tags
+        env:
+          VERSION: ${{ needs.get-version.outputs.version }}
+        run: |
+          # An older queued release must not move latest behind current main.
+          git fetch --no-tags origin main
+          current_version="$(git show FETCH_HEAD:cds-containers/VERSION | tr -d '[:space:]')"
+          for name in tools go-dev-1.24-alpine go-dev-1.24-debian; do
+            image="$REGISTRY/$IMAGE_NAMESPACE/$IMAGE_PREFIX$name"
+            digest="$(cat "digests/$name")"
+            tags=(--tag "$image:$VERSION" --tag "$image:sha-$GITHUB_SHA")
+            if [[ "$VERSION" == "$current_version" ]]; then
+              tags+=(--tag "$image:latest")
+            fi
+            docker buildx imagetools create --prefer-index=false "${tags[@]}" "$image@$digest"
+            echo "Published $image:$VERSION ($digest)"
+          done
+
   summary:
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'linux-amd64-cpu4' }}
+    runs-on: linux-amd64-cpu4
     timeout-minutes: 5
     permissions:
       contents: read
-    needs: [get-version, build-and-push-images]
+    needs: [get-version, build-and-test-images, publish-images]
     if: always()
 
     steps:
       - name: Build summary
+        env:
+          VERSION: ${{ needs.get-version.outputs.version }}
+          VERSION_RESULT: ${{ needs.get-version.result }}
+          BUILD_RESULT: ${{ needs.build-and-test-images.result }}
+          PUBLISH_RESULT: ${{ needs.publish-images.result }}
+          PUBLISH: ${{ needs.get-version.outputs.publish }}
         run: |
-          echo "## 🎉 CDS Containers Build Summary"
-          echo ""
-          echo "📦 Version: ${{ needs.get-version.outputs.version }}"
-          echo "🔨 Trigger: ${{ github.event_name }}"
-          echo "📌 Commit: ${{ github.sha }}"
-          echo ""
-          if [[ "${{ needs.get-version.outputs.publish }}" == "true" ]]; then
-            echo "✅ Built and pushed 4 container images to GHCR:"
-            echo "  - ghcr.io/nvidia/dsx-cds-tools:${{ needs.get-version.outputs.version }}"
-            echo "  - ghcr.io/nvidia/dsx-cds-grafana-backup-tool:${{ needs.get-version.outputs.version }}"
-            echo "  - ghcr.io/nvidia/dsx-cds-go-dev-1.24-alpine:${{ needs.get-version.outputs.version }}"
-            echo "  - ghcr.io/nvidia/dsx-cds-go-dev-1.24-debian:${{ needs.get-version.outputs.version }}"
-          else
-            echo "✅ Built images successfully (not pushed on non-main branches)"
+          {
+            echo "## CDS Containers Build Summary"
+            echo "Version: $VERSION"
+            echo "Commit: $GITHUB_SHA"
+            echo "Version validation: $VERSION_RESULT"
+            echo "Build and smoke tests: $BUILD_RESULT"
+            echo "Publication: $PUBLISH_RESULT"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$VERSION_RESULT" != "success" || "$BUILD_RESULT" != "success" ||
+                ( "$PUBLISH" == "true" && "$PUBLISH_RESULT" != "success" ) ]]; then
+            echo "Build, test, or publication did not complete successfully." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
-          echo ""
-          echo "📍 Usage example:"
-          echo "   container:"
-          echo "     image: ghcr.io/nvidia/dsx-cds-tools:sha-${{ github.sha }}"
-          echo "     credentials:"
-          echo "       username: \${{ github.actor }}"
-          echo "       password: \${{ secrets.GITHUB_TOKEN }}"
-          echo ""
-          echo "✅ All tests passed!"
+          if [[ "$PUBLISH_RESULT" == "success" ]]; then
+            {
+              echo "All 3 images passed smoke tests and were published. Usage:"
+              echo '```yaml'
+              echo "container:"
+              echo "  image: $REGISTRY/$IMAGE_NAMESPACE/${IMAGE_PREFIX}tools:sha-$GITHUB_SHA"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "All 3 images passed smoke tests. This run did not publish release tags." >> "$GITHUB_STEP_SUMMARY"
+          fi
