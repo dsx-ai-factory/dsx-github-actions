@@ -28,3 +28,41 @@ jobs:
 
       - name: Test release candidate resolution
         run: .github/actions/resolve-release-candidate/test.sh
+
+      - name: Resolve release candidate with default settings
+        id: default-rc
+        uses: ./.github/actions/resolve-release-candidate
+        with:
+          new-release-published: "true"
+          new-release-version: "1.2.3-rc.4"
+          new-release-git-tag: "v1.2.3-rc.4"
+
+      - name: Resolve release candidate with custom settings
+        id: custom-rc
+        uses: ./.github/actions/resolve-release-candidate
+        with:
+          new-release-published: "true"
+          new-release-version: "2.0.0-preview.1"
+          new-release-git-tag: "release/2.0.0-preview.1"
+          prerelease-identifier: "preview"
+          tag-prefix: "release/"
+
+      - name: Verify release candidate action outputs
+        env:
+          DEFAULT_SHOULD_PUBLISH: ${{ steps.default-rc.outputs.should-publish }}
+          DEFAULT_VERSION: ${{ steps.default-rc.outputs.version }}
+          DEFAULT_TAG: ${{ steps.default-rc.outputs.tag }}
+          DEFAULT_REUSED_EXISTING_TAG: ${{ steps.default-rc.outputs.reused-existing-tag }}
+          CUSTOM_SHOULD_PUBLISH: ${{ steps.custom-rc.outputs.should-publish }}
+          CUSTOM_VERSION: ${{ steps.custom-rc.outputs.version }}
+          CUSTOM_TAG: ${{ steps.custom-rc.outputs.tag }}
+          CUSTOM_REUSED_EXISTING_TAG: ${{ steps.custom-rc.outputs.reused-existing-tag }}
+        run: |
+          [[ "$DEFAULT_SHOULD_PUBLISH" == "true" ]]
+          [[ "$DEFAULT_VERSION" == "1.2.3-rc.4" ]]
+          [[ "$DEFAULT_TAG" == "v1.2.3-rc.4" ]]
+          [[ "$DEFAULT_REUSED_EXISTING_TAG" == "false" ]]
+          [[ "$CUSTOM_SHOULD_PUBLISH" == "true" ]]
+          [[ "$CUSTOM_VERSION" == "2.0.0-preview.1" ]]
+          [[ "$CUSTOM_TAG" == "release/2.0.0-preview.1" ]]
+          [[ "$CUSTOM_REUSED_EXISTING_TAG" == "false" ]]
