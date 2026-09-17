@@ -224,25 +224,27 @@ jobs:
 
     steps:
       - name: Build summary
+        env:
+          VERSION: ${{ needs.get-version.outputs.version }}
         run: |
           echo "## 🎉 CDS Containers Build Summary"
           echo ""
-          echo "📦 Version: ${{ needs.get-version.outputs.version }}"
+          echo "📦 Version: $VERSION"
           echo "🔨 Trigger: ${{ github.event_name }}"
           echo "📌 Commit: ${{ github.sha }}"
           echo ""
           if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
             echo "✅ Built and pushed 3 container images to GHCR:"
-            echo "  - ghcr.io/dsx-ai-factory/dsx-cds-tools:${{ needs.get-version.outputs.version }}"
-            echo "  - ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:${{ needs.get-version.outputs.version }}"
-            echo "  - ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-debian:${{ needs.get-version.outputs.version }}"
+            echo "  - ghcr.io/dsx-ai-factory/dsx-cds-tools:$VERSION"
+            echo "  - ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:$VERSION"
+            echo "  - ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-debian:$VERSION"
           else
             echo "✅ Built images successfully (not pushed on non-main branches)"
           fi
           echo ""
           echo "📍 Usage example:"
           echo "   container:"
-          echo "     image: ghcr.io/dsx-ai-factory/dsx-cds-tools:${{ needs.get-version.outputs.version }}"
+          echo "     image: ghcr.io/dsx-ai-factory/dsx-cds-tools:$VERSION"
           echo "     credentials:"
           echo "       username: \${{ github.actor }}"
           echo "       password: \${{ secrets.GITHUB_TOKEN }}"

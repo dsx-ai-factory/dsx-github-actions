@@ -268,7 +268,7 @@ jobs:
 - **Bandwidth**: 1 GB/month free
 - **GitHub Actions**: Pulling images in GH Actions **does not count toward bandwidth** ✅
 
-**Estimated cost for all 4 images**: ~$0.25/month (very affordable!)
+**Estimated cost for all 3 images**: ~$0.25/month (very affordable!)
 
 ---
 
