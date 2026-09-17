@@ -18,7 +18,7 @@ A reusable workflow that copies OCI images between registries (e.g., from NGC to
 ```yaml
 jobs:
   promote:
-    uses: dsx-ai-factory/dsx-github-actions/.github/workflows/promote-image.yml@main
+    uses: dsx-ai-factory/dsx-github-actions/.github/workflows/promote-image.yml@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
     with:
       source: nvcr.io/myorg/source-image
       source_tag: v1.0.0
@@ -40,7 +40,7 @@ A reusable workflow wrapper for building (and optionally pushing) OCI images via
 ```yaml
 jobs:
   build:
-    uses: dsx-ai-factory/dsx-github-actions/.github/workflows/docker-build.yml@main
+    uses: dsx-ai-factory/dsx-github-actions/.github/workflows/docker-build.yml@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
     with:
       runner: ubuntu-latest
       image: nvcr.io/myorg/myapp
@@ -120,23 +120,23 @@ The workflow creates two types of tags:
 
 1. **Full Version Tags** (e.g., `v1.2.3`)
 
-   - Immutable, never changes
-   - Use for production stability
+   - Intended to remain fixed
+   - Prefer the corresponding full commit SHA for production
 
 2. **Major Version Tags** (e.g., `v1`)
    - Points to latest minor/patch within major version
-   - Automatically updated with new releases
-   - Use for automatic updates within major version
+   - Force-updated automatically with every release
+   - Not a production pin
 
 ### Usage Examples
 
-**Pin to specific version** (recommended for production):
+**Pin to a full commit SHA** (supported for production):
 
 ```yaml
-uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@v1.2.3
+uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
 ```
 
-**Pin to major version** (get latest patches/features):
+**Pin to major version** (development and evaluation only):
 
 ```yaml
 uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@v1
