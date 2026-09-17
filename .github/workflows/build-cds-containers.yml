@@ -15,7 +15,8 @@
 
 name: Build CDS Containers
 
-# Trigger only on pushes to main or copy-pr-bot mirror branches, and only when relevant paths change
+# pull_request jobs run on GitHub-hosted runners. NVIDIA self-hosted runners
+# reject pull_request events until copy-pr-bot has vetted the PR.
 on:
   pull_request:
     paths:
@@ -41,7 +42,7 @@ env:
 
 jobs:
   get-version:
-    runs-on: linux-amd64-cpu4
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'linux-amd64-cpu4' }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -97,7 +98,7 @@ jobs:
           echo "Container version: $version (publish: $publish)"
 
   check-version-tags:
-    runs-on: linux-amd64-cpu4
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'linux-amd64-cpu4' }}
     timeout-minutes: 5
     permissions:
       packages: read
@@ -122,7 +123,7 @@ jobs:
           done
 
   build-and-push-images:
-    runs-on: linux-amd64-cpu4
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'linux-amd64-cpu4' }}
     timeout-minutes: 45
     permissions:
       contents: read
@@ -151,6 +152,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
+        if: github.event_name == 'pull_request'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up Docker Buildx
+        if: github.event_name != 'pull_request'
         uses: docker/setup-buildx-action@v3
         with:
           buildkitd-config: /etc/buildkit/buildkitd.toml
@@ -243,7 +249,7 @@ jobs:
             echo "Image built successfully without publishing."
           fi
   summary:
-    runs-on: linux-amd64-cpu4
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'linux-amd64-cpu4' }}
     timeout-minutes: 5
     permissions:
       contents: read
