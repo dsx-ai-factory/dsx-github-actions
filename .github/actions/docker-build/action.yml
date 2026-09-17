@@ -123,7 +123,7 @@ runs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
       with:
-        config: /etc/buildkit/buildkitd.toml
+        buildkitd-config: /etc/buildkit/buildkitd.toml
 
     - name: Prepare security scan vars
       if: inputs.security-scan-enabled == 'true'

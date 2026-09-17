@@ -47,8 +47,8 @@ jobs:
       - name: Extract version from VERSION
         id: extract-version
         run: |
-          VERSION=$(cat cds-containers/VERSION | tr -d '[:space:]')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          VERSION=$(tr -d '[:space:]' < cds-containers/VERSION)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "📌 Container version: $VERSION"
 
   # Job 2: Build and push all container images
@@ -82,7 +82,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          config: /etc/buildkit/buildkitd.toml
+          buildkitd-config: /etc/buildkit/buildkitd.toml
 
       - name: Log in to GitHub Container Registry
         if: github.ref == 'refs/heads/main'
