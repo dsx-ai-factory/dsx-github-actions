@@ -46,6 +46,14 @@ Without GHAS enabled, scans will run successfully but uploads will fail. See ind
 
 ## 📖 Quick Start
 
+### Enable Release Candidates for Your Component
+
+Follow the [RC onboarding guide](docs/release-candidate-publishing.md) to add
+protected release branches, `vX.Y.Z-rc.N` tags and matching NGC images/charts.
+It uses **dsx-exchange** as a worked example and includes setup, tag behavior,
+first-release checks, safe reruns and the handoff to an SBOM.
+Start with [Onboard Your Repository](docs/release-candidate-publishing.md#onboard-your-repository).
+
 ### Security Scanning (Rust)
 
 ```yaml
@@ -137,11 +145,11 @@ This reusable workflow wraps `skopeo copy`, so it copies the entire manifest lis
 - ✅ **PR Comments**: Automated security findings on pull requests
 - ✅ **Configurable**: Extensive input parameters for customization
 - ✅ **Well-documented**: Comprehensive README for each action
-- ✅ **Automatic Versioning**: Semantic releases on every commit
+- ✅ **Automatic Versioning**: Semantic releases for release-worthy changes
 
 ## 📦 Version Pinning
 
-This repository uses **automatic semantic versioning**. Tags are automatically created on every push to `main` using [Conventional Commits](https://www.conventionalcommits.org/).
+This repository uses **automatic semantic versioning**. Pushes to `main` are evaluated using [Conventional Commits](https://www.conventionalcommits.org/); a tag is created only when the changes warrant a release.
 
 ### Recommended Approaches
 
@@ -211,7 +219,7 @@ git ls-remote --tags https://github.com/dsx-ai-factory/dsx-github-actions.git
 
 This repository uses automatic semantic versioning:
 
-- 🤖 **Automated**: Tags are created automatically on push to `main`
+- 🤖 **Automated**: Release-worthy changes on `main` create tags automatically
 - 📝 **Conventional Commits**: Version bumps based on commit messages
 - 📦 **Dual Tags**: Both specific (`v1.2.3`) and major (`v1`) tags are created
 
