@@ -189,20 +189,17 @@ jobs:
         env:
           IMAGE: ${{ steps.test-image.outputs.image }}
         run: |
-          docker run --rm "$IMAGE" sh -ec '
+          docker run --rm -i "$IMAGE" sh -ec '
             go version
             golangci-lint --version
-            goimports -h >/dev/null
-          '
-          docker run --rm -i "$IMAGE" sh -ec '
             workdir="$(mktemp -d)"
             cd "$workdir"
             cat > hello.go
+            goimports -w hello.go
             go build hello.go
             ./hello
           ' <<'EOF'
           package main
-          import "fmt"
           func main() {
               fmt.Println("Hello from the CDS Go container")
           }
