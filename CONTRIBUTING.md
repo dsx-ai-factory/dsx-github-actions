@@ -168,7 +168,8 @@ Use descriptive branch names like:
 - Reference any related issues.
 - Keep pull requests focused on a single change.
 - Be responsive to feedback and code review comments.
-- Ensure all CI checks pass before requesting review.
+- Run `pre-commit run --all-files` before requesting review.
+- Ensure the pull request validation checks pass.
 
 ## Questions?
 

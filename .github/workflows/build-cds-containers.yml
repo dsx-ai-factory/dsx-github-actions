@@ -47,8 +47,8 @@ jobs:
       - name: Extract version from VERSION
         id: extract-version
         run: |
-          VERSION=$(cat cds-containers/VERSION | tr -d '[:space:]')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          VERSION=$(tr -d '[:space:]' < cds-containers/VERSION)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "📌 Container version: $VERSION"
 
   # Job 2: Build and push all container images
