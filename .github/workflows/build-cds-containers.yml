@@ -275,7 +275,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Ensure all release tags are unused
+      - name: Check all release tags against tested digests
         env:
           VERSION: ${{ needs.get-version.outputs.version }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -284,7 +284,8 @@ jobs:
             digest="$(cat "digests/$name")"
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
             python3 .github/scripts/check_cds_tags.py \
-              "$REGISTRY/$IMAGE_NAMESPACE/$IMAGE_PREFIX$name" "$VERSION" "sha-$GITHUB_SHA"
+              "$REGISTRY/$IMAGE_NAMESPACE/$IMAGE_PREFIX$name" "$digest" "$VERSION" "sha-$GITHUB_SHA" \
+              > "digests/missing-$name"
           done
 
       - name: Promote tested digests to release tags
@@ -297,11 +298,16 @@ jobs:
           for name in tools go-dev-1.24-alpine go-dev-1.24-debian; do
             image="$REGISTRY/$IMAGE_NAMESPACE/$IMAGE_PREFIX$name"
             digest="$(cat "digests/$name")"
-            tags=(--tag "$image:$VERSION" --tag "$image:sha-$GITHUB_SHA")
+            tags=()
+            while IFS= read -r tag; do
+              tags+=(--tag "$image:$tag")
+            done < "digests/missing-$name"
             if [[ "$VERSION" == "$current_version" ]]; then
               tags+=(--tag "$image:latest")
             fi
-            docker buildx imagetools create --prefer-index=false "${tags[@]}" "$image@$digest"
+            if (( ${#tags[@]} > 0 )); then
+              docker buildx imagetools create --prefer-index=false "${tags[@]}" "$image@$digest"
+            fi
             echo "Published $image:$VERSION ($digest)"
           done
 

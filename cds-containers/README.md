@@ -154,8 +154,10 @@ The current version is defined in [`VERSION`](./VERSION): **0.0.2**
 This file contains only the semantic version number (e.g., `0.0.1`).
 
 Version tags and `sha-<40-character-commit-sha>` tags are immutable. The
-publishing workflow refuses to overwrite existing version or SHA tags, so every
-image-content change requires a `VERSION` bump. The `latest` tag is mutable and
+publishing workflow refuses to change an existing version or SHA tag's digest, so
+every active image-content change requires a `VERSION` bump. This applies to
+`tools`, `go-dev-1.24-alpine`, and `go-dev-1.24-debian`; the inactive
+`grafana-backup-tool` image is excluded. The `latest` tag is mutable and
 must not be used when reproducibility matters. Pinning the published digest is
 the strongest reference:
 
@@ -170,15 +172,19 @@ Pushes to `main` and copy-pr-bot branches (`pull-request/**`) build and smoke-te
 all three images. Mirror branches and manual runs test locally loaded images
 without publishing. Only a push to `main` that changes `VERSION` publishes.
 The workflow first pushes unique staging tags and tests their exact digests.
-After all images pass, it checks that every version and SHA tag is unused, then
-promotes those tested digests to release tags. Authentication, network, and
+After all images pass, it checks that every version and SHA tag is either unused
+or already points to that image's tested digest, then creates only the missing
+release tags. Authentication, network, and
 unexpected registry errors stop publication. Only an explicit `MANIFEST_UNKNOWN`
 response permits a new tag.
 
 Runs for each branch are serialized and queued (up to 100 pending runs).
 An older queued version does not update `latest` after `main` has moved to a newer
-version. Publication across multiple images is not atomic: if promotion partially
-fails, bump `VERSION` for the next release instead of overwriting published tags.
+version. Publication across multiple images is not atomic. If promotion partially
+fails, use **Re-run failed jobs** while the tested-digest artifacts are available
+(retained for one day). The publication job reuses those digests, skips matching
+version/SHA tags, and creates the missing tags. Rebuilding can produce different
+digests; conflicting published tags still require a new `VERSION`.
 
 When you need to update tools or fix issues:
 
@@ -343,4 +349,4 @@ docker run --rm test-cds-tools bazel --version
 - **No internal tools**: `nvault` and `cds-cli` are not included as GitHub runners cannot reach internal NVIDIA resources
 - **For internal use**: Use GitLab version at `registry.gitlab-master.nvidia.com/cds/cds-containers/tools`
 - **Immutable tagging**: Use a version, full commit SHA tag, or digest; `latest` is mutable
-- **Path-filtered pipeline**: Only changes to `cds-containers/` folder trigger builds
+- **Path-filtered pipeline**: Pushes matching `cds-containers/**`, `.github/workflows/build-cds-containers.yml`, or `.github/scripts/check_cds_tags.py` trigger builds and smoke tests. Manual runs also build and test; release publication additionally requires a push to `main` that changes `VERSION`.
