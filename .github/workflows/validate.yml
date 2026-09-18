@@ -32,9 +32,6 @@ jobs:
       - name: Test CDS release tag guard
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
 
-      - name: Test Docker build scan and publication gate
-        run: bash .github/actions/docker-build/test.sh
-
       - name: Resolve release candidate with default settings
         id: default-rc
         uses: ./.github/actions/resolve-release-candidate

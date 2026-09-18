@@ -2,18 +2,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Scan the Buildx OCI export, then publish it without rebuilding.
+# Scan every platform in the Buildx OCI export. Publication is a separate step.
 set -euo pipefail
 
 fail() { printf '::error::%s\n' "$*" >&2; exit 1; }
 
 : "${SCAN_LAYOUT:?}" "${SCAN_DIGEST:?}" "${SCAN_PLATFORMS:?}" "${SCAN_REPORTS:?}"
-: "${SYFT_IMAGE:?}" "${GRYPE_IMAGE:?}" "${SKOPEO_IMAGE:?}"
+: "${SYFT_IMAGE:?}" "${GRYPE_IMAGE:?}"
 SCAN_CACHE="${SCAN_CACHE:-$HOME/.cache/grype/db}"
 SCAN_FAIL_ON_CRITICAL="${SCAN_FAIL_ON_CRITICAL:-true}"
-SCAN_PUSH="${SCAN_PUSH:-false}"
 [[ "$SCAN_FAIL_ON_CRITICAL" == true || "$SCAN_FAIL_ON_CRITICAL" == false ]] || fail 'Invalid Critical policy'
-[[ "$SCAN_PUSH" == true || "$SCAN_PUSH" == false ]] || fail 'Invalid push setting'
 mkdir -p "$SCAN_REPORTS" "$SCAN_CACHE"
 
 # The layout comes directly from the preceding Buildx step.
@@ -84,21 +82,4 @@ while IFS=$'\t' read -r platform digest; do
   [[ -s "$SCAN_REPORTS/$key.sarif" && -s "$SCAN_REPORTS/$key.txt" ]] || fail "Missing Grype reports for $platform"
   printf -- '- %s: %s Critical (%s)\n' "$platform" "$criticals" "$digest" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 done < "$SCAN_REPORTS/platforms.tsv"
-[[ "$blocked" == false ]] || fail 'Critical vulnerability policy failed; image was not published'
-[[ "$SCAN_PUSH" == true ]] || exit 0
-[[ -n "${SCAN_TAGS:-}" ]] || fail 'No publication tags supplied'
-
-# docker/login-action writes the Docker auth file. Mount it read-only instead of
-# passing registry credentials in process arguments.
-auth_dir="${DOCKER_CONFIG:-$HOME/.docker}"
-skopeo_args=(copy --all --preserve-digests --digestfile /reports/published.digest)
-if [[ -f "$auth_dir/config.json" ]]; then
-  container+=(--volume "$auth_dir:/auth:ro")
-  skopeo_args+=(--authfile /auth/config.json)
-fi
-while IFS= read -r tag; do
-  [[ -n "$tag" ]] || continue
-  "${container[@]}" --volume "$SCAN_LAYOUT:/candidate:ro" --volume "$SCAN_REPORTS:/reports" \
-    "$SKOPEO_IMAGE" "${skopeo_args[@]}" "oci:/candidate" "docker://$tag"
-  [[ "$(< "$SCAN_REPORTS/published.digest")" == "$SCAN_DIGEST" ]] || fail 'Published digest differs from scanned digest'
-done <<< "$SCAN_TAGS"
+[[ "$blocked" == false ]] || fail 'Critical vulnerability policy failed'

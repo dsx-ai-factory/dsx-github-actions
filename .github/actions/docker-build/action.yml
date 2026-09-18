@@ -164,7 +164,8 @@ runs:
         cache-from: ${{ steps.normalize.outputs.cache-from }}
         cache-to: ${{ steps.normalize.outputs.cache-to }}
 
-    - name: Scan all platforms and publish the scanned artifact
+    - name: Scan all platforms
+      id: scan
       if: inputs.security-scan-enabled == 'true'
       shell: bash
       env:
@@ -173,14 +174,43 @@ runs:
         SCAN_PLATFORMS: ${{ inputs.platforms }}
         SCAN_REPORTS: ${{ steps.scan_vars.outputs.reports }}
         SCAN_FAIL_ON_CRITICAL: ${{ inputs.security-scan-fail-on-critical }}
-        SCAN_PUSH: ${{ inputs.push }}
-        SCAN_TAGS: ${{ steps.normalize.outputs.tags }}
         # Tool image pins live here, alongside the action version pins.
         SYFT_IMAGE: anchore/syft:v1.52.0@sha256:500e2d872ac019436926e8322b4fc1f39441d94d21f6f4046c6ff29b30e8cb02
         GRYPE_IMAGE: anchore/grype:v0.117.0@sha256:ddf9e9f204049f3a4a0955ef70873cabab6a31432125ad4f20a490b54950a253
+      run: |
+        bash "$GITHUB_ACTION_PATH/scripts/scan-oci.sh"
+
+    - name: Publish scanned artifact
+      if: inputs.security-scan-enabled == 'true' && inputs.push == 'true' && steps.scan.outcome == 'success'
+      shell: bash
+      env:
+        OCI_LAYOUT: ${{ steps.scan_vars.outputs.layout }}
+        EXPECTED_DIGEST: ${{ steps.build.outputs.digest }}
+        REPORTS: ${{ steps.scan_vars.outputs.reports }}
+        IMAGE_TAGS: ${{ steps.normalize.outputs.tags }}
         SKOPEO_IMAGE: quay.io/skopeo/stable@sha256:0d85390eabf4e9247ca4d4d2eaa7c956bbffd17f3342d458b072cd7270c9da93
       run: |
-        bash "$GITHUB_ACTION_PATH/scripts/scan-and-publish.sh"
+        set -euo pipefail
+        publish_tmp="$(mktemp -d "${RUNNER_TEMP}/docker-publish.XXXXXX")"
+        trap 'rm -rf "$publish_tmp"' EXIT
+        container=(docker run --rm --user "$(id -u):$(id -g)"
+          --volume "$publish_tmp:/tmp" --env XDG_CACHE_HOME=/tmp/.cache
+          --volume "$OCI_LAYOUT:/candidate:ro" --volume "$REPORTS:/reports")
+        skopeo_args=(copy --all --preserve-digests --digestfile /reports/published.digest)
+        # Reuse docker/login-action credentials without putting secrets in argv.
+        auth_dir="${DOCKER_CONFIG:-$HOME/.docker}"
+        if [[ -f "$auth_dir/config.json" ]]; then
+          container+=(--volume "$auth_dir:/auth:ro")
+          skopeo_args+=(--authfile /auth/config.json)
+        fi
+        while IFS= read -r tag; do
+          [[ -n "$tag" ]] || continue
+          "${container[@]}" "$SKOPEO_IMAGE" "${skopeo_args[@]}" "oci:/candidate" "docker://$tag"
+          if [[ "$(< "$REPORTS/published.digest")" != "$EXPECTED_DIGEST" ]]; then
+            echo "::error::Published digest differs from scanned digest"
+            exit 1
+          fi
+        done <<< "$IMAGE_TAGS"
 
     - name: Upload platform scan reports
       if: ${{ always() && inputs.security-scan-enabled == 'true' && steps.scan_vars.outputs.reports != '' }}
