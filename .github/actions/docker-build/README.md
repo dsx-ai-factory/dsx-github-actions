@@ -92,6 +92,7 @@ steps:
 ## Notes
 
 - If `push: "true"` but `username/password` are not provided, this action assumes you have already logged in earlier in the job.
+- Scanned publication resolves Docker `credHelpers` / `credsStore` on the host (or reads inline credentials). Only the destination registry's credentials are passed to Skopeo through a temporary `0600` authfile, which is removed on exit; host credential helpers must be available in `PATH`.
 - When `security-scan-enabled: "true"`, Buildx exports all requested platforms once to `$RUNNER_TEMP/docker-build-scan.XXXXXX/candidate` (an OCI layout, not the Docker daemon or a registry). Allow enough runner disk space for all platforms and scanner extraction.
 - The **Scan all platforms** step runs `scripts/scan-oci.sh`: Syft reads each platform from that layout and Grype scans its SBOM. These tools inspect files; they do not execute the target image. Reports and SPDX SBOMs for each platform are uploaded as a workflow artifact, including on scan failure.
 - The separate **Publish scanned artifact** step runs only when scanning succeeds and `push: "true"`. Skopeo copies the original index, images, and attestations to each requested tag with `--all --preserve-digests`; there is no second build. `push: "false"` performs the same scans without publication. Disabling scanning retains the existing direct Buildx push path.

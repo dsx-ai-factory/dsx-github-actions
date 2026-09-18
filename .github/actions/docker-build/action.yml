@@ -193,18 +193,15 @@ runs:
         set -euo pipefail
         publish_tmp="$(mktemp -d "${RUNNER_TEMP}/docker-publish.XXXXXX")"
         trap 'rm -rf "$publish_tmp"' EXIT
+        mkdir "$publish_tmp/scratch"
         container=(docker run --rm --user "$(id -u):$(id -g)"
-          --volume "$publish_tmp:/tmp" --env XDG_CACHE_HOME=/tmp/.cache
+          --volume "$publish_tmp/scratch:/tmp" --env XDG_CACHE_HOME=/tmp/.cache
+          --volume "$publish_tmp/auth.json:/auth.json:ro"
           --volume "$OCI_LAYOUT:/candidate:ro" --volume "$REPORTS:/reports")
-        skopeo_args=(copy --all --preserve-digests --digestfile /reports/published.digest)
-        # Reuse docker/login-action credentials without putting secrets in argv.
-        auth_dir="${DOCKER_CONFIG:-$HOME/.docker}"
-        if [[ -f "$auth_dir/config.json" ]]; then
-          container+=(--volume "$auth_dir:/auth:ro")
-          skopeo_args+=(--authfile /auth/config.json)
-        fi
+        skopeo_args=(copy --all --preserve-digests --digestfile /reports/published.digest --authfile /auth.json)
         while IFS= read -r tag; do
           [[ -n "$tag" ]] || continue
+          bash "$GITHUB_ACTION_PATH/scripts/prepare-registry-auth.sh" "$tag" "$publish_tmp/auth.json"
           "${container[@]}" "$SKOPEO_IMAGE" "${skopeo_args[@]}" "oci:/candidate" "docker://$tag"
           if [[ "$(< "$REPORTS/published.digest")" != "$EXPECTED_DIGEST" ]]; then
             echo "::error::Published digest differs from scanned digest"
