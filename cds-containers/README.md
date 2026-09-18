@@ -156,8 +156,7 @@ This file contains only the semantic version number (e.g., `0.0.1`).
 Version tags and `sha-<40-character-commit-sha>` tags are immutable. The
 publishing workflow refuses to change an existing version or SHA tag's digest, so
 every active image-content change requires a `VERSION` bump. This applies to
-`tools`, `go-dev-1.24-alpine`, and `go-dev-1.24-debian`; the inactive
-`grafana-backup-tool` image is excluded. The `latest` tag is mutable and
+`tools`, `go-dev-1.24-alpine`, and `go-dev-1.24-debian`. The `latest` tag is mutable and
 must not be used when reproducibility matters. Pinning the published digest is
 the strongest reference:
 
