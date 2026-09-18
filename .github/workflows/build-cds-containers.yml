@@ -299,16 +299,21 @@ jobs:
             image="$REGISTRY/$IMAGE_NAMESPACE/$IMAGE_PREFIX$name"
             digest="$(cat "digests/$name")"
             tags=()
+            published_tags=()
             while IFS= read -r tag; do
               tags+=(--tag "$image:$tag")
+              published_tags+=("$tag")
             done < "digests/missing-$name"
             if [[ "$VERSION" == "$current_version" ]]; then
               tags+=(--tag "$image:latest")
+              published_tags+=("latest")
             fi
             if (( ${#tags[@]} > 0 )); then
               docker buildx imagetools create --prefer-index=false "${tags[@]}" "$image@$digest"
+              echo "Published $image tags: ${published_tags[*]} ($digest)"
+            else
+              echo "Skipped $image; immutable tags already point to $digest"
             fi
-            echo "Published $image:$VERSION ($digest)"
           done
 
   summary:

@@ -170,12 +170,12 @@ container:
 Pushes to `main` and copy-pr-bot branches (`pull-request/**`) build and smoke-test
 all three images. Mirror branches and manual runs test locally loaded images
 without publishing. Only a push to `main` that changes `VERSION` publishes.
-The workflow first pushes unique staging tags and tests their exact digests.
-After all images pass, it checks that every version and SHA tag is either unused
-or already points to that image's tested digest, then creates only the missing
-release tags. Authentication, network, and
-unexpected registry errors stop publication. Only an explicit `MANIFEST_UNKNOWN`
-response permits a new tag.
+
+For publishing runs, the workflow first pushes unique staging tags and tests their
+exact digests. After all images pass, it checks that every version and SHA tag is
+either unused or already points to that image's tested digest, then creates only
+the missing release tags. Authentication, network, and unexpected registry errors
+stop publication. Only an explicit `MANIFEST_UNKNOWN` response permits a new tag.
 
 Runs for each branch are serialized and queued (up to 100 pending runs).
 An older queued version does not update `latest` after `main` has moved to a newer
