@@ -82,7 +82,7 @@ inputs:
     required: false
     default: ""
   security-scan-enabled:
-    description: "If true, build a local linux/amd64 image and run SBOM+Grype scan before the main build/push. Any scan tool failure will fail the action and prevent pushing."
+    description: "Build once to OCI, scan every requested Linux platform with Syft/Grype, then publish the same digest. Tool errors always prevent publication."
     required: false
     default: "false"
   security-scan-fail-on-critical:
@@ -125,53 +125,16 @@ runs:
       with:
         buildkitd-config: /etc/buildkit/buildkitd.toml
 
-    - name: Prepare security scan vars
+    - name: Prepare security scan paths
       if: inputs.security-scan-enabled == 'true'
       id: scan_vars
       shell: bash
       run: |
         set -euo pipefail
-        scan_image="localbuild/dsx-docker-build-scan:${{ github.run_id }}-${{ github.run_attempt }}"
-        echo "scan_image=${scan_image}" >> "$GITHUB_OUTPUT"
-        echo "report_json=${RUNNER_TEMP}/grype-results-${{ github.run_id }}-${{ github.run_attempt }}.json" >> "$GITHUB_OUTPUT"
-        echo "report_sarif=${RUNNER_TEMP}/grype-results-${{ github.run_id }}-${{ github.run_attempt }}.sarif" >> "$GITHUB_OUTPUT"
-        echo "artifact_name=docker-build-scan-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
-
-    - name: Pre-scan build (local load, linux/amd64)
-      if: inputs.security-scan-enabled == 'true'
-      uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
-      with:
-        context: ${{ inputs.context }}
-        file: ${{ inputs.dockerfile }}
-        platforms: linux/amd64
-        push: false
-        load: true
-        tags: ${{ steps.scan_vars.outputs.scan_image }}
-        labels: ${{ inputs.labels }}
-        build-args: ${{ inputs.build-args }}
-        target: ${{ inputs.target }}
-        cache-from: ${{ steps.normalize.outputs.cache-from }}
-        cache-to: ${{ steps.normalize.outputs.cache-to }}
-
-    - name: Precheck local image exists (for scan)
-      if: inputs.security-scan-enabled == 'true'
-      shell: bash
-      run: |
-        set -euo pipefail
-        docker image inspect "${{ steps.scan_vars.outputs.scan_image }}" >/dev/null 2>&1
-
-    - name: Security scan (SBOM + Grype)
-      if: inputs.security-scan-enabled == 'true'
-      id: secscan
-      uses: dsx-ai-factory/dsx-github-actions/.github/actions/security-container-scan@d8d304286ba834f32ff672d5c90782f2bbab4aea # security-container-scan
-      with:
-        image: ${{ steps.scan_vars.outputs.scan_image }}
-        fail-on: critical
-        # gate ourselves to support "fail on critical" toggle while still failing on tool errors
-        fail-build: ${{ inputs.security-scan-fail-on-critical }}
-        report-json: ${{ steps.scan_vars.outputs.report_json }}
-        report-sarif: ${{ steps.scan_vars.outputs.report_sarif }}
-        artifact-name: ${{ steps.scan_vars.outputs.artifact_name }}
+        scan_dir="$(mktemp -d "${RUNNER_TEMP}/docker-build-scan.XXXXXX")"
+        echo "layout=${scan_dir}/candidate" >> "$GITHUB_OUTPUT"
+        echo "reports=${scan_dir}/reports" >> "$GITHUB_OUTPUT"
+        echo "artifact_name=docker-build-scan-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${scan_dir##*.}" >> "$GITHUB_OUTPUT"
 
     - name: Login to registry
       if: inputs.push == 'true' && inputs.username != '' && inputs.password != ''
@@ -181,14 +144,17 @@ runs:
         username: ${{ inputs.username }}
         password: ${{ inputs.password }}
 
-    - name: Build and push
+    - name: Build image
       id: build
       uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
       with:
         context: ${{ inputs.context }}
         file: ${{ inputs.dockerfile }}
         platforms: ${{ inputs.platforms }}
-        push: ${{ inputs.push }}
+        push: ${{ inputs.security-scan-enabled != 'true' && inputs.push == 'true' }}
+        # Scanned builds export once; publication copies this OCI layout after
+        # every requested platform passes. The no-scan path retains direct push.
+        outputs: ${{ inputs.security-scan-enabled == 'true' && format('type=oci,dest={0},tar=false', steps.scan_vars.outputs.layout) || '' }}
         tags: ${{ steps.normalize.outputs.tags }}
         labels: ${{ inputs.labels }}
         build-args: ${{ inputs.build-args }}
@@ -197,3 +163,29 @@ runs:
         sbom: ${{ inputs.sbom }}
         cache-from: ${{ steps.normalize.outputs.cache-from }}
         cache-to: ${{ steps.normalize.outputs.cache-to }}
+
+    - name: Scan all platforms and publish the scanned artifact
+      if: inputs.security-scan-enabled == 'true'
+      shell: bash
+      env:
+        SCAN_LAYOUT: ${{ steps.scan_vars.outputs.layout }}
+        SCAN_DIGEST: ${{ steps.build.outputs.digest }}
+        SCAN_PLATFORMS: ${{ inputs.platforms }}
+        SCAN_REPORTS: ${{ steps.scan_vars.outputs.reports }}
+        SCAN_FAIL_ON_CRITICAL: ${{ inputs.security-scan-fail-on-critical }}
+        SCAN_PUSH: ${{ inputs.push }}
+        SCAN_TAGS: ${{ steps.normalize.outputs.tags }}
+        # Tool image pins live here, alongside the action version pins.
+        SYFT_IMAGE: anchore/syft:v1.52.0@sha256:500e2d872ac019436926e8322b4fc1f39441d94d21f6f4046c6ff29b30e8cb02
+        GRYPE_IMAGE: anchore/grype:v0.117.0@sha256:ddf9e9f204049f3a4a0955ef70873cabab6a31432125ad4f20a490b54950a253
+        SKOPEO_IMAGE: quay.io/skopeo/stable@sha256:0d85390eabf4e9247ca4d4d2eaa7c956bbffd17f3342d458b072cd7270c9da93
+      run: |
+        bash "$GITHUB_ACTION_PATH/scripts/scan-and-publish.sh"
+
+    - name: Upload platform scan reports
+      if: ${{ always() && inputs.security-scan-enabled == 'true' && steps.scan_vars.outputs.reports != '' }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ steps.scan_vars.outputs.artifact_name }}
+        path: ${{ steps.scan_vars.outputs.reports }}
+        if-no-files-found: ignore
