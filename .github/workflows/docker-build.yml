@@ -92,7 +92,7 @@ on:
         default: ""
         type: string
       security_scan_enabled:
-        description: "Run security-container-scan (SBOM + Grype) against a locally-built linux/amd64 image before the main build/push"
+        description: "Build once, scan every requested Linux platform with Syft/Grype, and publish the same OCI artifact only after the scan policy passes"
         required: false
         default: false
         type: boolean
