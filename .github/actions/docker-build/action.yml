@@ -188,7 +188,7 @@ runs:
         EXPECTED_DIGEST: ${{ steps.build.outputs.digest }}
         REPORTS: ${{ steps.scan_vars.outputs.reports }}
         IMAGE_TAGS: ${{ steps.normalize.outputs.tags }}
-        SKOPEO_IMAGE: quay.io/skopeo/stable@sha256:0d85390eabf4e9247ca4d4d2eaa7c956bbffd17f3342d458b072cd7270c9da93
+        SKOPEO_IMAGE: quay.io/skopeo/stable:v1.22.2-immutable@sha256:4a16d57b37617a04b3d643079a477a2848efe892dffcdf0ce56df4262b65f810
       run: |
         set -euo pipefail
         publish_tmp="$(mktemp -d "${RUNNER_TEMP}/docker-publish.XXXXXX")"
