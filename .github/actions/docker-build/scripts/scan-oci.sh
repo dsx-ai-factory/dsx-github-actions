@@ -51,13 +51,16 @@ actual="$(cut -f1 "$SCAN_REPORTS/platforms.tsv" | LC_ALL=C sort)"
 # Use disk-backed scratch space: extracting large images into tmpfs can OOM.
 tool_tmp="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/docker-build-tools.XXXXXX")"
 trap 'rm -rf "$tool_tmp"' EXIT
-container=(docker run --rm --user "$(id -u):$(id -g)" --volume "$tool_tmp:/tmp" --env XDG_CACHE_HOME=/tmp/.cache)
+container=(docker run --rm --user "$(id -u):$(id -g)"
+  --cap-drop=ALL --security-opt=no-new-privileges
+  --volume "$tool_tmp:/tmp" --env XDG_CACHE_HOME=/tmp/.cache)
 blocked=false
 printf '\n### Container scan\n\nCandidate: %s\n\n' "$SCAN_DIGEST" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 while IFS=$'\t' read -r platform digest; do
   key="${platform//\//-}"
   printf 'Scanning %s at %s\n' "$platform" "$digest"
-  "${container[@]}" --volume "$SCAN_LAYOUT:/candidate:ro" --volume "$SCAN_REPORTS:/reports" \
+  "${container[@]}" --network=none --env SYFT_CHECK_FOR_APP_UPDATE=false \
+    --volume "$SCAN_LAYOUT:/candidate:ro" --volume "$SCAN_REPORTS:/reports" \
     "$SYFT_IMAGE" scan oci-dir:/candidate --platform "$platform" \
     -o "syft-json=/reports/$key.syft.json" -o "spdx-json=/reports/$key.spdx.json"
   jq -e --arg digest "$digest" '.source.metadata.manifestDigest == $digest' \

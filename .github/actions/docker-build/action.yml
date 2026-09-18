@@ -195,6 +195,7 @@ runs:
         trap 'rm -rf "$publish_tmp"' EXIT
         mkdir "$publish_tmp/scratch"
         container=(docker run --rm --user "$(id -u):$(id -g)"
+          --cap-drop=ALL --security-opt=no-new-privileges
           --volume "$publish_tmp/scratch:/tmp" --env XDG_CACHE_HOME=/tmp/.cache
           --volume "$publish_tmp/auth.json:/auth.json:ro"
           --volume "$OCI_LAYOUT:/candidate:ro" --volume "$REPORTS:/reports")
