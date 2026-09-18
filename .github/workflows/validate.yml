@@ -29,6 +29,9 @@ jobs:
       - name: Test release candidate resolution
         run: .github/actions/resolve-release-candidate/test.sh
 
+      - name: Test CDS release tag guard
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+
       - name: Resolve release candidate with default settings
         id: default-rc
         uses: ./.github/actions/resolve-release-candidate

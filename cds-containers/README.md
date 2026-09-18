@@ -11,7 +11,7 @@ Container images for CDS tooling, optimized for GitHub Actions workflows. These 
 ### 1. `cds-tools` - CDS Tools Container
 Comprehensive tooling for infrastructure automation, CI/CD, and Kubernetes operations.
 
-**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-tools:latest`
+**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-tools:0.0.2`
 
 **Includes**:
 - **Bazel** (multiple versions):
@@ -29,7 +29,7 @@ Comprehensive tooling for infrastructure automation, CI/CD, and Kubernetes opera
 ### 2. `cds-go-dev-1.24-alpine` - Go Development (Alpine)
 Lightweight Go 1.24 development environment with essential tooling.
 
-**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:latest`
+**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:0.0.2`
 
 **Includes**:
 - Go 1.24.3 (Alpine-based)
@@ -46,7 +46,7 @@ Lightweight Go 1.24 development environment with essential tooling.
 ### 3. `cds-go-dev-1.24-debian` - Go Development (Debian)
 Full-featured Go 1.24 environment with better C library compatibility.
 
-**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-debian:latest`
+**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-debian:0.0.2`
 
 **Size**: ~300MB+
 
@@ -69,7 +69,7 @@ jobs:
       packages: read  # Required to pull from GHCR
 
     container:
-      image: ghcr.io/dsx-ai-factory/dsx-cds-tools:0.0.1
+      image: ghcr.io/dsx-ai-factory/dsx-cds-tools:0.0.2
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -109,14 +109,14 @@ jobs:
           docker run --rm \
             -v $PWD:/workspace \
             -w /workspace \
-            ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:latest \
+            ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:0.0.2 \
             go build ./...
 ```
 
 ### Method 3: Building Custom Image Based on CDS Containers
 
 ```dockerfile
-FROM ghcr.io/dsx-ai-factory/dsx-cds-tools:0.0.1
+FROM ghcr.io/dsx-ai-factory/dsx-cds-tools:0.0.2
 
 # Add your custom tools
 RUN apt-get update && apt-get install -y \
@@ -129,10 +129,10 @@ WORKDIR /app
 
 ## 🔒 Private Image Access
 
-### For repos in the same org (NVIDIA):
-- ✅ `GITHUB_TOKEN` automatically has read access to org packages
-- ✅ Just add `permissions: packages: read` to your job
-- ✅ No extra secrets or PAT needed
+### For repos in the same org (dsx-ai-factory):
+- Grant the consuming repository **Read** access under the package's **Manage Actions access** settings.
+- Add `permissions: packages: read` to the consuming job.
+- Use that job's `GITHUB_TOKEN` in the container credentials.
 
 ### For cross-org or external repos:
 1. Create a Personal Access Token (PAT) with `read:packages` scope
@@ -149,11 +149,41 @@ WORKDIR /app
 ## 🏗️ Versioning and Updates
 
 ### Current Version
-The current version is defined in [`VERSION`](./VERSION): **0.0.1**
+The current version is defined in [`VERSION`](./VERSION): **0.0.2**
 
 This file contains only the semantic version number (e.g., `0.0.1`).
 
+Version tags and `sha-<40-character-commit-sha>` tags are immutable. The
+publishing workflow refuses to change an existing version or SHA tag's digest, so
+every active image-content change requires a `VERSION` bump. This applies to
+`tools`, `go-dev-1.24-alpine`, and `go-dev-1.24-debian`. The `latest` tag is mutable and
+must not be used when reproducibility matters. Pinning the published digest is
+the strongest reference:
+
+```yaml
+container:
+  image: ghcr.io/dsx-ai-factory/dsx-cds-tools@sha256:<digest>
+```
+
 ### Updating Containers
+
+Pushes to `main` and copy-pr-bot branches (`pull-request/**`) build and smoke-test
+all three images. Mirror branches and manual runs test locally loaded images
+without publishing. Only a push to `main` that changes `VERSION` publishes.
+
+For publishing runs, the workflow first pushes unique staging tags and tests their
+exact digests. After all images pass, it checks that every version and SHA tag is
+either unused or already points to that image's tested digest, then creates only
+the missing release tags. Authentication, network, and unexpected registry errors
+stop publication. Only an explicit `MANIFEST_UNKNOWN` response permits a new tag.
+
+Runs for each branch are serialized and queued (up to 100 pending runs).
+An older queued version does not update `latest` after `main` has moved to a newer
+version. Publication across multiple images is not atomic. If promotion partially
+fails, use **Re-run failed jobs** while the tested-digest artifacts are available
+(retained for one day). The publication job reuses those digests, skips matching
+version/SHA tags, and creates the missing tags. Rebuilding can produce different
+digests; conflicting published tags still require a new `VERSION`.
 
 When you need to update tools or fix issues:
 
@@ -168,8 +198,8 @@ When you need to update tools or fix issues:
    git commit -m "feat: upgrade kubectl to v1.33.0"
    git push
    ```
-4. **Pipeline auto-triggers** - Only runs when `cds-containers/` files change
-5. **Images are tagged** with the version from VERSION.md
+4. **Pipeline auto-triggers** - Runs when container files, the build workflow, or its registry guard change
+5. **Images are tagged** with the version from `VERSION` and the full commit SHA
 
 **Version Bumping**:
 - **PATCH** (0.0.1 → 0.0.2): Bug fixes, base image updates
@@ -193,7 +223,8 @@ git push
 
 # Pipeline runs automatically, creates:
 # - ghcr.io/dsx-ai-factory/dsx-cds-tools:0.1.0
-# - ghcr.io/dsx-ai-factory/dsx-cds-tools:latest
+# - ghcr.io/dsx-ai-factory/dsx-cds-tools:sha-<40-character-commit-sha>
+# - ghcr.io/dsx-ai-factory/dsx-cds-tools:latest (mutable)
 ```
 
 ---
@@ -204,8 +235,8 @@ git push
 
 | GitLab Registry | GitHub GHCR |
 |-----------------|-------------|
-| `registry.gitlab-master.nvidia.com/cds/cds-containers/tools:latest` | `ghcr.io/dsx-ai-factory/dsx-cds-tools:latest` |
-| `registry.gitlab-master.nvidia.com/cds/cds-containers/go-dev-1.24-alpine:1.0.0` | `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:0.0.1` |
+| `registry.gitlab-master.nvidia.com/cds/cds-containers/tools:latest` | `ghcr.io/dsx-ai-factory/dsx-cds-tools:0.0.2` |
+| `registry.gitlab-master.nvidia.com/cds/cds-containers/go-dev-1.24-alpine:1.0.0` | `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:0.0.2` |
 
 ### Key Differences
 
@@ -248,7 +279,7 @@ If your Makefile uses `bazel` commands directly, override the default:
 jobs:
   build:
     container:
-      image: ghcr.io/dsx-ai-factory/dsx-cds-tools:latest
+      image: ghcr.io/dsx-ai-factory/dsx-cds-tools:0.0.2
 
     steps:
       - name: Override bazel to use version 6.5.0
@@ -305,7 +336,7 @@ docker run --rm test-cds-tools bazel --version
 
 ## 🔗 Useful Links
 
-- **GHCR Packages**: https://github.com/orgs/NVIDIA/packages?repo_name=dsx-github-actions
+- **GHCR Packages**: https://github.com/orgs/dsx-ai-factory/packages?repo_name=dsx-github-actions
 - **GitHub Actions Workflow**: `.github/workflows/build-cds-containers.yml`
 - **Version History**: See `CHANGELOG.md`
 - **Original GitLab Repo**: https://gitlab-master.nvidia.com/cds/cds-containers
@@ -316,5 +347,5 @@ docker run --rm test-cds-tools bazel --version
 
 - **No internal tools**: `nvault` and `cds-cli` are not included as GitHub runners cannot reach internal NVIDIA resources
 - **For internal use**: Use GitLab version at `registry.gitlab-master.nvidia.com/cds/cds-containers/tools`
-- **Version-based tagging**: Images are tagged with versions from `VERSION`, not Git tags
-- **Path-filtered pipeline**: Only changes to `cds-containers/` folder trigger builds
+- **Immutable tagging**: Use a version, full commit SHA tag, or digest; `latest` is mutable
+- **Path-filtered pipeline**: Pushes matching `cds-containers/**`, `.github/workflows/build-cds-containers.yml`, or `.github/scripts/check_cds_tags.py` trigger builds and smoke tests. Manual runs also build and test; release publication additionally requires a push to `main` that changes `VERSION`.

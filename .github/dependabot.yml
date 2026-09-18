@@ -14,7 +14,6 @@ updates:
 
   - package-ecosystem: docker
     directories:
-      - /cds-containers/grafana-backup-tool
       - /cds-containers/go-dev-1.24-alpine
       - /cds-containers/go-dev-1.24-debian
       - /cds-containers/tools
