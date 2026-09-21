@@ -2,10 +2,89 @@
 
 This directory contains automated workflows for the dsx-github-actions repository.
 
+## Release Candidate Publish
+
+Use [`release-candidate-publish.yml`](release-candidate-publish.yml) to publish
+source RCs, NGC images, and Helm charts through one caller job. The caller
+provides product manifests and access policy. Shared jobs own manifest
+validation, source publishing, artifact publishing, and immutable-artifact
+checks. No product RC scripts or separate publishing jobs are required.
+
+Start with the [Exchange caller example](../../docs/release-candidate-publishing.md#recommended-minimal-workflow).
+Replace `REPLACE_WITH_REVIEWED_COMMIT_SHA` with a reviewed full commit SHA
+containing the wrapper and helpers before enabling the caller.
+
+### Inputs
+
+All inputs are strings. The two manifests contain JSON arrays.
+
+| Input | Default | Purpose |
+| --- | --- | --- |
+| `runner` | `ubuntu-latest` | Approved Linux runner for preflight and publishing. Central checks use `ubuntu-latest`. |
+| `default-branch` | Empty, resolved to the caller repository's default branch | Stable history for the unchanged source publisher. |
+| `images` | `[]` | Entries with `name`, `context`, and `dockerfile`. Images use fixed `linux/amd64,linux/arm64` platforms. |
+| `charts` | `[]` | Entries with `name`, `path`, and optional `localDependencies: [{"name": "dependency", "path": "path/to/chart"}]`. |
+| `environment` | Required | GitHub environment for artifact jobs. Exchange uses `components-dev`. |
+| `ngc-path` | Required | NGC organization/team path, without a registry hostname. Exchange uses `0837451325059433/components-dev`. |
+
+Manifest paths are relative to the product repository root. Declare local chart
+dependencies explicitly; the shared implementation does not encode Exchange
+component names. Refer to the [manifest contract](../../docs/release-candidate-publishing.md#manifest-contract)
+for examples and preflight requirements. Inputs contain JSON, not manifest-file
+paths. Empty arrays disable that artifact type, but at least one image or chart
+is required. Use `release-candidate.yml` when you only need source releases.
+
+### Secrets
+
+The workflow declares these optional secrets.
+
+| Secret | Purpose |
+| --- | --- |
+| `release-deploy-key` | Forwarded only to the source publisher for Git operations. GitHub Release API calls still use `GITHUB_TOKEN`. |
+| `NGC_DSX_COMPONENTS_PUSH_KEY` | NGC credential resolved in each artifact job's selected environment. A caller can pass a repository or organization secret when environment-scoped storage is not used. |
+
+Configure `NGC_DSX_COMPONENTS_PUSH_KEY` in the selected GitHub environment for
+the recommended setup. Do not pass an environment secret through the caller's
+`secrets` mapping. Restrict the environment to approved protected release
+branches. The NGC secret is optional in `workflow_call`, but artifact publishing
+requires an available credential. Validation does not use publishing
+credentials or the publishing environment.
+
+### Publishing Contract
+
+- Preflight parses the product manifests and validates paths before the source
+  publisher can create an RC tag. The wrapper runs central checks on non-release
+  events; the source publisher runs its own shared tests on release pushes.
+  These checks do not replace required product tests or approval.
+- Copy-pr-bot `push` and `pull_request` events can validate manifests when the
+  caller enables them. They do not publish. Exchange uses copy-pr-bot pushes.
+- Source publishing calls the existing `release-candidate.yml` workflow. Its
+  exact branch, protected-ref, current-head, version, and prerelease gates remain
+  in effect. The caller must grant `contents: write` for source publishing.
+- Artifact jobs require the verified source release. They use the resolved tag
+  and version, run with `contents: read`, and use the selected environment.
+- Shared image checks verify both supported platforms and their source revision.
+  Shared chart checks verify version, app version, and source revision. Matching
+  artifacts are reused; a mismatch fails instead of overwriting an RC artifact.
+- Shared chart preparation aligns explicitly declared local dependency versions
+  before packaging. Product files are changed only in the job workspace.
+- Neither stable releases nor moving tags are published. GitHub.com is supported;
+  GHES and arbitrary image platform selection are outside this contract.
+
+Refer to [first-RC acceptance](../../docs/release-candidate-publishing.md#verify-your-first-rc)
+before declaring onboarding complete. Local checks do not prove live GitHub
+tag authorization, NGC publishing, or a real RC rerun.
+
+### Outputs
+
+The wrapper exposes `version`, `tag`, and `release-url` from the source publisher.
+These outputs identify the source release, not completion of all artifact jobs.
+The source-only outputs `should-publish` and `reused-existing-tag` are not wrapper outputs.
+
 ## Release Candidate (`release-candidate.yml`)
 
-Recommended `workflow_call` entry point for source-only RC releases. Start
-with the [13-line consumer workflow](../../docs/release-candidate-publishing.md#recommended-minimal-workflow).
+The existing `workflow_call` entry point remains unchanged for source-only RC releases.
+Start with the [source-only caller](../../docs/release-candidate-publishing.md#source-only-workflow).
 Replace its `REPLACE_WITH_REVIEWED_COMMIT_SHA` placeholder with a full
 reviewed commit containing this workflow before enabling it. No product Node
 files, `.releaserc` changes or custom scripts are required.
@@ -68,12 +147,13 @@ publishing, so an unusable key fails before token fallback. See the
 | `reused-existing-tag` | Whether this run reused an existing RC tag. |
 | `release-url` | Verified GitHub prerelease URL. |
 
-Product-native NGC jobs use `needs: release`, gate on
-`needs.release.outputs.should-publish == 'true'`, check out the `tag` and use
-the `version` for artifacts. Keep registry credentials and artifact
-verification in those jobs. See the [helper reference](../actions/release-candidate/README.md)
-and the preserved [advanced Exchange composition](../../docs/release-candidate-publishing.md#advanced-composition)
-for repository-owned plugins or custom release policy.
+For NGC publishing, use the wrapper above. It consumes these outputs and owns
+the artifact jobs. `should-publish` verifies the source RC, not completion of
+all artifact jobs. Custom consumers must gate on `should-publish`, check out
+`tag`, and verify every artifact at `version`. Refer to the
+[helper reference](../actions/release-candidate/README.md) and
+[advanced composition boundary](../../docs/release-candidate-publishing.md#advanced-composition)
+for source-only integration outside the wrapper.
 
 ## Promote Image (`promote-image.yml`)
 

@@ -19,3 +19,7 @@ paths:
     ignore:
       # Keep this exception limited to the two documented job properties.
       - '^property "workflow_(sha|repository)" is not defined in object type \{check_run_id: number; container:'
+  .github/workflows/release-candidate-publish.yml:
+    ignore:
+      # Same workflow identity properties as the source-only RC publisher.
+      - '^property "workflow_(sha|repository)" is not defined in object type \{check_run_id: number; container:'

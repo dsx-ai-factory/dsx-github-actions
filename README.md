@@ -28,7 +28,8 @@ A collection of reusable GitHub Actions for standardizing CI/CD workflows across
 | ------------------------------------------------------------------------ | ----------------------------------------------------- | --------------------------------------- |
 | [promote-image](.github/workflows/promote-image.yml) | Re-tag and re-publish multi-arch images via `skopeo` | Promote OCI images across registries |
 | [docker-build](.github/workflows/docker-build.yml) | Reusable workflow wrapper for Docker build/push | Share Docker build logic across repos |
-| [release-candidate](.github/workflows/release-candidate.yml) | Protected-branch source RC tags and GitHub prereleases | Shared RC policy with outputs for product publishing jobs |
+| [release-candidate-publish](.github/workflows/release-candidate-publish.yml) | Source RCs plus immutable NGC images and Helm charts | Manifest-driven RC publishing through one caller job |
+| [release-candidate](.github/workflows/release-candidate.yml) | Protected-branch source RC tags and GitHub prereleases | Source-only RC publishing without registry credentials |
 
 ## ⚠️ Important: GitHub Advanced Security Required
 
@@ -50,23 +51,31 @@ Without GHAS enabled, scans will run successfully but uploads will fail. See ind
 ### Enable Release Candidates for Your Component
 
 Start with the [recommended minimal RC workflow](docs/release-candidate-publishing.md#recommended-minimal-workflow).
-One reusable-workflow job creates `vX.Y.Z-rc.N` source tags and GitHub
-prereleases from a protected `release/X.Y.Z` branch. No product Node files,
-`.releaserc` changes or custom scripts are required; stable-release
-configuration stays unchanged. Replace `REPLACE_WITH_REVIEWED_COMMIT_SHA` in
-the example with a reviewed commit containing the shared workflow before use.
+One caller job uses `release-candidate-publish.yml` with inline image and chart
+manifests, a GitHub environment, and an NGC path. The shared workflow validates
+the manifests before creating an RC tag. It publishes source tags, GitHub
+prereleases, and matching NGC artifacts only from a protected `release/X.Y.Z`
+branch. Images use `linux/amd64,linux/arm64`; arbitrary platform selection is
+not supported. No product RC scripts, publishing jobs, Node files, or
+`.releaserc` changes are required. Stable publishing stays unchanged.
+
+Replace `REPLACE_WITH_REVIEWED_COMMIT_SHA` in the example with a reviewed
+commit containing the wrapper and shared helpers before use. Configure
+`NGC_DSX_COMPONENTS_PUSH_KEY` in the selected publishing environment. Validation
+on copy-pr-bot pushes or `pull_request` events does not publish artifacts or
+use the publishing environment.
 
 If tag rules require a repository Deploy Key, pass the optional
 [`release-deploy-key` secret](docs/release-candidate-publishing.md#optional-deploy-key-authentication).
 Git uses SSH in that mode; `GITHUB_TOKEN` still handles GitHub Release API
 calls. Without the secret, the existing HTTPS/token behavior is unchanged.
 
-The workflow does not publish NGC artifacts or update stable/major tags.
-Its outputs feed product-native image/chart jobs. The
-[RC onboarding guide](docs/release-candidate-publishing.md) retains the
-step-by-step **dsx-exchange** example for
-[advanced composition](docs/release-candidate-publishing.md#advanced-composition),
-including artifact verification, safe reruns and the SBOM handoff.
+For source-only releases, the existing `release-candidate.yml` interface and
+behavior remain unchanged. It requires no NGC credentials and does not publish
+artifacts. Neither RC entry point updates stable or moving major tags. The
+[RC onboarding guide](docs/release-candidate-publishing.md) covers Exchange's
+manifest, artifact verification, reruns, and the SBOM handoff. Historical
+release branches retain their checked-in workflows until explicitly migrated.
 
 ### Security Scanning (Rust)
 
@@ -147,6 +156,7 @@ This reusable workflow wraps `skopeo copy`, so it copies the entire manifest lis
 - [Commitlint Action](.github/actions/commitlint/README.md)
 - [Helm Unit Tests Action](.github/actions/helm-unittest/README.md)
 - [Workflows Guide](.github/workflows/README.md)
+- [Shared RC Artifact Publishing Workflow](.github/workflows/README.md#release-candidate-publish)
 - [Shared Release Candidate Workflow](.github/workflows/README.md#release-candidate-release-candidateyml)
 - [Shared Release Candidate Helpers](.github/actions/release-candidate/README.md)
 - [Release Candidate Artifact Publishing](docs/release-candidate-publishing.md)
@@ -363,6 +373,8 @@ If CI still fails, execute `pre-commit run actionlint --all-files` or `pre-commi
     ├── release.yml         # Automatic semantic versioning
     ├── promote-image.yml   # Promote image across registries
     ├── docker-build.yml    # Reusable Docker build/push wrapper
+    ├── release-candidate.yml          # Source-only RC publisher
+    ├── release-candidate-publish.yml  # Source RC and NGC artifact publisher
     └── README.md           # Workflows documentation
 
 CONTRIBUTING.md             # Contribution guidelines
