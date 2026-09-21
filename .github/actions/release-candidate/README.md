@@ -27,6 +27,7 @@ The product's stable-release configuration remains unchanged.
 | File | Responsibility |
 | --- | --- |
 | `check-source.sh` | Require an exact `release/X.Y.Z` push, protected ref, full history and a checked-out event commit that is still the remote branch head. |
+| `check-git-auth.sh` | In Deploy Key mode, require an SSH push dry run before publishing. No remote refs change; authentication failure stops the workflow before semantic-release can fall back to a token. |
 | `config.cjs` | Generate isolated Conventional Commits RC configuration with a separate stable-history branch, `v${version}` tags, the version guard and GitHub prerelease publishing. |
 | `validate-version.cjs` | Require `X.Y.Z-rc.N` to match the branch, with a positive sequence and no leading zeros. Exposes both a CLI preview guard and semantic-release's actual-publication `verifyRelease` guard. |
 | `verify-existing-tag.sh` | Verify a rerun tag's version, source commit and semantic-release `rc` channel notes before reusing it. Missing or invalid metadata requires maintainer repair. |
@@ -43,6 +44,10 @@ Existing tags are detected before semantic-release to support reruns.
 
 - Inputs are `runner` (default `ubuntu-latest`) and `default-branch` (default
   the caller repository's default branch). Central checks use `ubuntu-latest`.
+- The optional `release-deploy-key` secret enables SSH for source Git
+  operations. Configuration receives only a boolean selecting the canonical
+  SSH URL, never the key. Without it, Git uses HTTPS; GitHub Release API calls
+  use `GITHUB_TOKEN` in either mode. Central checks do not receive the key.
 - The caller must configure protected source/tag rules, approved source and
   required product tests, and grant `contents: write` to `GITHUB_TOKEN`.
   Shared contract checks do not approve source changes or run product tests.
