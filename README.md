@@ -59,6 +59,10 @@ branch. Images use `linux/amd64,linux/arm64`; arbitrary platform selection is
 not supported. No product RC scripts, publishing jobs, Node files, or
 `.releaserc` changes are required. Stable publishing stays unchanged.
 
+The wrapper requires an explicit `runner`; it has no default. For images,
+the runner must have Docker and a readable `/etc/buildkit/buildkitd.toml`.
+Preflight checks these prerequisites before creating an RC tag.
+
 Replace `REPLACE_WITH_REVIEWED_COMMIT_SHA` in the example with a reviewed
 commit containing the wrapper and shared helpers before use. Configure
 `NGC_DSX_COMPONENTS_PUSH_KEY` in the selected publishing environment. Validation
@@ -76,6 +80,10 @@ artifacts. Neither RC entry point updates stable or moving major tags. The
 [RC onboarding guide](docs/release-candidate-publishing.md) covers Exchange's
 manifest, artifact verification, reruns, and the SBOM handoff. Historical
 release branches retain their checked-in workflows until explicitly migrated.
+
+Shared chart jobs check a freshly fetched, authenticated NGC index before
+preparation. Verified existing charts skip dependency resolution and packaging.
+Only confirmed missing chart versions are built; lookup errors fail the job.
 
 ### Security Scanning (Rust)
 

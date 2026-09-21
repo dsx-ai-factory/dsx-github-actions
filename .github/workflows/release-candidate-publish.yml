@@ -7,9 +7,9 @@ on:
   workflow_call:
     inputs:
       runner:
-        description: Approved Linux runner with Docker for image publishing
+        description: Approved Linux runner with Docker and the shared BuildKit configuration for image publishing
         type: string
-        default: ubuntu-latest
+        required: true
       default-branch:
         description: Stable history branch, defaults to the repository default branch
         type: string
@@ -94,6 +94,14 @@ jobs:
           RC_CHARTS: ${{ inputs.charts }}
           RC_NGC_PATH: ${{ inputs.ngc-path }}
         run: node ../dsx-release-tools/.github/actions/release-artifacts/plan.cjs
+      - name: Check image build prerequisites before creating a source tag
+        if: steps.plan.outputs.image-count != '0'
+        run: |
+          docker info >/dev/null
+          if [[ ! -r /etc/buildkit/buildkitd.toml ]]; then
+            echo "::error::The image runner must provide /etc/buildkit/buildkitd.toml for the shared Docker builder."
+            exit 1
+          fi
 
   release:
     needs: plan
@@ -231,7 +239,30 @@ jobs:
       - uses: dcarbone/install-yq-action@64b1b9eb28920bb1a4c13c05321df284f9a8f940 # v1.1.1
       - name: Install Helm
         run: bash dsx-release-tools/.github/actions/helm-shared/scripts/install-helm.sh
+      - name: Authenticate the chart registry
+        env:
+          CC_HELM_NGC_KEY: ${{ secrets.NGC_DSX_COMPONENTS_PUSH_KEY }}
+          CC_HELM_NGC_PATH: ${{ inputs.ngc-path }}
+          CC_HELM_NGC_REGISTRY: https://helm.ngc.nvidia.com
+        run: bash dsx-release-tools/.github/actions/helm-shared/scripts/utils.sh helm_ngc_repo_add
+      - name: Check for an existing immutable chart
+        id: existing
+        env:
+          CHART_NAME: ${{ matrix.name }}
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          set +e
+          bash dsx-release-tools/.github/actions/release-artifacts/verify-chart.sh --check-existing
+          status=$?
+          set -e
+          case "$status" in
+            0) echo "exists=true" >> "$GITHUB_OUTPUT" ;;
+            3) echo "exists=false" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
       - name: Prepare chart metadata and local dependencies
+        if: steps.existing.outputs.exists != 'true'
         working-directory: release-source
         env:
           RC_CHART: ${{ toJSON(matrix) }}
@@ -241,6 +272,7 @@ jobs:
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
           node ../dsx-release-tools/.github/actions/release-artifacts/prepare-chart.cjs
       - name: Publish the chart without overwriting existing versions
+        if: steps.existing.outputs.exists != 'true'
         uses: ./dsx-release-tools/.github/actions/helm-package-push
         with:
           chart-path: release-source/${{ matrix.path }}

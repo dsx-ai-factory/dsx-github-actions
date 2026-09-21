@@ -20,7 +20,7 @@ All inputs are strings. The two manifests contain JSON arrays.
 
 | Input | Default | Purpose |
 | --- | --- | --- |
-| `runner` | `ubuntu-latest` | Approved Linux runner for preflight and publishing. Central checks use `ubuntu-latest`. |
+| `runner` | Required, no default | Approved Linux runner for preflight and publishing. Central checks use `ubuntu-latest`. |
 | `default-branch` | Empty, resolved to the caller repository's default branch | Stable history for the unchanged source publisher. |
 | `images` | `[]` | Entries with `name`, `context`, and `dockerfile`. Images use fixed `linux/amd64,linux/arm64` platforms. |
 | `charts` | `[]` | Entries with `name`, `path`, and optional `localDependencies: [{"name": "dependency", "path": "path/to/chart"}]`. |
@@ -33,6 +33,10 @@ component names. Refer to the [manifest contract](../../docs/release-candidate-p
 for examples and preflight requirements. Inputs contain JSON, not manifest-file
 paths. Empty arrays disable that artifact type, but at least one image or chart
 is required. Use `release-candidate.yml` when you only need source releases.
+
+When images are declared, the runner must have Docker and a readable
+`/etc/buildkit/buildkitd.toml`, as required by the shared `docker-build` action.
+Preflight rejects a missing prerequisite before source tag creation.
 
 ### Secrets
 
@@ -64,10 +68,13 @@ credentials or the publishing environment.
 - Artifact jobs require the verified source release. They use the resolved tag
   and version, run with `contents: read`, and use the selected environment.
 - Shared image checks verify both supported platforms and their source revision.
-  Shared chart checks verify version, app version, and source revision. Matching
-  artifacts are reused; a mismatch fails instead of overwriting an RC artifact.
-- Shared chart preparation aligns explicitly declared local dependency versions
-  before packaging. Product files are changed only in the job workspace.
+  Shared chart jobs check a freshly fetched, authenticated NGC index before
+  preparation. Existing charts must match the expected name, version, app version,
+  and source revision. A match skips dependency resolution and packaging.
+- Only confirmed missing chart versions proceed to preparation and packaging.
+  Authentication, index, download, or verification errors are not treated as
+  missing artifacts. Shared preparation aligns explicitly declared local
+  dependency versions only in the job workspace.
 - Neither stable releases nor moving tags are published. GitHub.com is supported;
   GHES and arbitrary image platform selection are outside this contract.
 

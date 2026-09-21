@@ -28,6 +28,7 @@ function success(result) {
   assert.equal(result.error, undefined);
   assert.equal(result.signal, null, result.stderr);
   assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /fake-secret-never-log/);
 }
 
 function failure(result, message) {
@@ -67,6 +68,7 @@ function fixture(t) {
     HOME: home, TMPDIR: temporary, RUNNER_TEMP: temporary, LC_ALL: 'C',
     HELM_CACHE_HOME: path.join(home, 'cache'), HELM_CONFIG_HOME: path.join(home, 'config'),
     HELM_DATA_HOME: path.join(home, 'data'), HELM_REPOSITORY_CONFIG: path.join(home, 'repositories.yaml'),
+    HELM_REPOSITORY_CACHE: path.join(home, 'cache/repository'),
     TEST_LOG: log, TEST_REAL_HELM: helm || '', TEST_SECRET: 'fake-secret-never-log',
   };
   const config = { name: 'example-service', path: 'products/service chart' };
@@ -80,14 +82,14 @@ function fixture(t) {
   executable('helm', `
     const fs = require('node:fs');
     const path = require('node:path');
-    const { execFileSync } = require('node:child_process');
+    const { execFileSync, spawnSync } = require('node:child_process');
     const env = process.env;
     const args = process.argv.slice(2);
     const previous = fs.existsSync(env.TEST_LOG)
       ? fs.readFileSync(env.TEST_LOG, 'utf8').trim().split('\\n').map(JSON.parse) : [];
     fs.appendFileSync(env.TEST_LOG, JSON.stringify({command: 'helm', args, cwd: process.cwd(),
       repositoryConfig: env.HELM_REPOSITORY_CONFIG}) + '\\n');
-    function fail() { console.log(env.TEST_SECRET); console.error(env.TEST_SECRET); process.exit(1); }
+    function fail() { console.log(env.TEST_SECRET); console.error(env.TEST_ERROR || env.TEST_SECRET); process.exit(1); }
     function failures(count) { return count === 'always' || Number(count) >= attempt; }
     let attempt = previous.filter(item => item.command === 'helm' && item.args[0] === args[0]).length + 1;
     if (args[0] === 'dependency') {
@@ -97,6 +99,21 @@ function fixture(t) {
     if (args[0] === 'repo' && args[1] === 'update') {
       if (JSON.stringify(args) !== JSON.stringify(['repo', 'update', 'helm-repo-ngc', '--fail-on-repo-update-fail'])) fail();
       if (failures(env.TEST_REPO_FAILURES)) fail();
+      if (env.TEST_REPO_WARNING) console.error(env.TEST_SECRET);
+    } else if (args[0] === 'search' && args[1] === 'repo') {
+      if (JSON.stringify(args) !== JSON.stringify(['search', 'repo', 'helm-repo-ngc/' + env.CHART_NAME,
+        '--versions', '--devel', '--output', 'json'])) fail();
+      if (env.TEST_SEARCH_FAILURE) fail();
+      if (env.TEST_SEARCH_WARNING) console.error(env.TEST_SECRET);
+      if (env.TEST_REAL_SEARCH) {
+        const result = spawnSync(env.TEST_REAL_HELM, args, {encoding: 'utf8'});
+        process.stdout.write(result.stdout || '');
+        process.stderr.write(result.stderr || '');
+        process.exit(result.status === null ? 1 : result.status);
+      }
+      process.stdout.write(env.TEST_SEARCH_RESULTS === undefined
+        ? JSON.stringify([{name: 'helm-repo-ngc/' + env.CHART_NAME, version: env.RELEASE_VERSION}])
+        : env.TEST_SEARCH_RESULTS);
     } else if (args[0] === 'pull') {
       if (args[1] !== 'helm-repo-ngc/' + env.CHART_NAME || args[2] !== '--version' || args[3] !== env.RELEASE_VERSION) fail();
       const destination = args[args.indexOf('--destination') + 1];
@@ -168,14 +185,17 @@ function fixture(t) {
     if (raw !== undefined) fs.writeFileSync(file, raw);
     return { TEST_ARCHIVE: archive, TEST_METADATA: file, ...(raw === undefined ? {} : { TEST_SHOW_OVERRIDE: 'true' }) };
   }
-  function verify(artifact, extraEnv = {}, args = []) {
-    return run('bash', [...args, verifyScript], {
+  function verify(artifact, extraEnv = {}, args = [], scriptArgs = []) {
+    return run('bash', [...args, verifyScript, ...scriptArgs], {
       CHART_NAME: config.name, RELEASE_VERSION: version, EXPECTED_REVISION: revision,
       ...artifact, ...extraEnv,
     });
   }
+  function checkExisting(artifact, extraEnv = {}) {
+    return verify(artifact, extraEnv, [], ['--check-existing']);
+  }
   return { root, source, bin, env, temporary, config, chart, write, run, prepare, events, metadata,
-    localDependency, useRealHelm, publishedArtifact, verify, executable };
+    localDependency, useRealHelm, publishedArtifact, verify, checkExisting, executable };
 }
 
 test('chart preparation with actual Mike Farah yq', { skip: !yq && 'Mike Farah yq v4 is not installed' }, async (t) => {
@@ -205,16 +225,35 @@ test('chart preparation with actual Mike Farah yq', { skip: !yq && 'Mike Farah y
     assert.deepEqual(f.events(), []);
   });
 
+  await t.test('supports root checkout charts, empty dependencies, and absent annotations', (t) => {
+    const f = fixture(t);
+    f.config = { name: 'example.service_v2', path: '.' };
+    f.write('Chart.yaml', 'apiVersion: v2\nname: example.service_v2\nversion: 0.1.0\ndependencies: []\n');
+    const before = snapshot(f.source);
+    success(f.prepare({ validateOnly: true, chartConfig: f.config }));
+    assert.deepEqual(snapshot(f.source), before);
+    success(f.prepare({ chartConfig: f.config }));
+    assert.equal(f.metadata('.').annotations['dsx.nvidia.com/source-revision'], revision);
+    assert.deepEqual(f.events(), []);
+  });
+
   await t.test('aligns only explicitly supplied local dependencies and resolves from the declared chart directory', (t) => {
     const f = fixture(t);
     f.localDependency();
     f.chart('shared/other', 'unmanaged-library');
     fs.appendFileSync(path.join(f.source, f.config.path, 'Chart.yaml'),
       '  - name: unmanaged-library\n    version: "0.1.0"\n    repository: file://../../shared/other\n');
+    f.chart('shared/managed', 'managed-library');
+    fs.appendFileSync(path.join(f.source, f.config.path, 'Chart.yaml'),
+      '  - name: managed-library\n    version: "0.1.0"\n    repository: file://../../shared/managed\n');
+    f.config.localDependencies.push({ name: 'managed-library', path: 'shared/managed' });
     const unmanaged = fs.readFileSync(path.join(f.source, 'shared/other/Chart.yaml'), 'utf8');
     success(f.prepare());
     assert.equal(f.metadata().dependencies[0].version, version);
     assert.equal(f.metadata().dependencies[1].version, '0.1.0');
+    assert.equal(f.metadata().dependencies[2].version, version);
+    assert.equal(f.metadata('shared/managed').version, version);
+    assert.equal(f.metadata('shared/managed').appVersion, version);
     assert.equal(f.metadata('shared/worker').version, version);
     assert.equal(f.metadata('shared/worker').appVersion, version);
     assert.equal(f.metadata('shared/worker').annotations['dsx.nvidia.com/source-revision'], undefined);
@@ -234,6 +273,7 @@ test('chart preparation with actual Mike Farah yq', { skip: !yq && 'Mike Farah y
   });
 
   const invalid = [
+    ['newline in name', (f) => { f.config.name += '\n'; }, /valid chart name/],
     ['wrong root name', (f) => { f.config.name = 'another-service'; }, /name does not match/],
     ['wrong local chart name', (f) => { f.chart('shared/worker', 'wrong-worker'); }, /name does not match/],
     ['wrong parent dependency name', (f) => { f.localDependency('file://../../shared/worker', 'wrong-parent-name'); }, /name does not match/],
@@ -244,9 +284,14 @@ test('chart preparation with actual Mike Farah yq', { skip: !yq && 'Mike Farah y
     ['duplicate parent dependency', (f) => { fs.appendFileSync(path.join(f.source, f.config.path, 'Chart.yaml'), '  - name: example-worker\n    version: 0.1.0\n    repository: file://../../shared/worker\n'); }, /exactly one parent/],
     ['invalid localDependencies type', (f) => { f.config.localDependencies = null; }, /must be an array/],
     ['missing local path', (f) => { delete f.config.localDependencies[0].path; }, /checkout-relative path/],
+    ['absolute local path', (f) => { f.config.localDependencies[0].path = path.join(f.source, 'shared/worker'); }, /checkout-relative path/],
     ['missing root path', (f) => { delete f.config.path; }, /checkout-relative path/],
     ['absolute root path', (f) => { f.config.path = path.join(f.source, f.config.path); }, /checkout-relative path/],
     ['nonexistent root chart', (f) => { f.config.path = 'not-a-chart'; }, /existing path/],
+    ['chart path is a file', (f) => { f.config.path += '/Chart.yaml'; }, /must be a directory/],
+    ['missing Chart.yaml', (f) => { fs.unlinkSync(path.join(f.source, f.config.path, 'Chart.yaml')); }, /existing path/],
+    ['empty file repository path', (f) => { f.localDependency('file://'); }, /checkout-relative path/],
+    ['broken content symlink', (f) => { fs.symlinkSync('nonexistent', path.join(f.source, f.config.path, 'broken')); }, /existing path/],
     ['invalid YAML', (f) => { f.write(`${f.config.path}/Chart.yaml`, 'name: [broken\n'); }, /valid YAML document/],
     ['multiple YAML documents', (f) => { fs.appendFileSync(path.join(f.source, f.config.path, 'Chart.yaml'), '\n---\nname: hidden\n'); }, /valid YAML document/],
     ['nonmapping YAML', (f) => { f.write(`${f.config.path}/Chart.yaml`, '- invalid\n'); }, /valid chart name/],
@@ -313,7 +358,8 @@ test('chart preparation with actual Mike Farah yq', { skip: !yq && 'Mike Farah y
     const f = fixture(t);
     const before = snapshot(f.source);
     for (const extraEnv of [{ RELEASE_VERSION: '' }, { RELEASE_VERSION: '../unsafe' },
-      { RELEASE_VERSION: '2.8.0' }, { EXPECTED_REVISION: '' }, { EXPECTED_REVISION: 'shortsha' }]) {
+      { RELEASE_VERSION: '2.8.0' }, { RELEASE_VERSION: `${version}\n` },
+      { EXPECTED_REVISION: '' }, { EXPECTED_REVISION: 'shortsha' }, { EXPECTED_REVISION: `${revision}\n` }]) {
       failure(f.prepare({ extraEnv }), /RELEASE_VERSION|EXPECTED_REVISION/);
       assert.deepEqual(snapshot(f.source), before);
     }
@@ -335,6 +381,22 @@ test('chart preparation with actual Mike Farah yq', { skip: !yq && 'Mike Farah y
     f.executable('yq', 'console.error(process.env.TEST_SECRET); process.exit(1);');
     const before = snapshot(f.source);
     failure(f.prepare(), /readable by yq/);
+    assert.deepEqual(snapshot(f.source), before);
+    assert.deepEqual(f.events(), []);
+  });
+
+  await t.test('yq write failure prevents Helm dependency update and hides tool diagnostics', (t) => {
+    const f = fixture(t);
+    f.localDependency();
+    fs.unlinkSync(path.join(f.bin, 'yq'));
+    f.executable('yq', `
+      const { execFileSync } = require('node:child_process');
+      const args = process.argv.slice(2);
+      if (args.includes('-i')) { console.error(process.env.TEST_SECRET); process.exit(1); }
+      process.stdout.write(execFileSync(${JSON.stringify(yq)}, args));
+    `);
+    const before = snapshot(f.source);
+    failure(f.prepare(), /yq failed/);
     assert.deepEqual(snapshot(f.source), before);
     assert.deepEqual(f.events(), []);
   });
@@ -363,6 +425,116 @@ test('chart preparation with actual Mike Farah yq', { skip: !yq && 'Mike Farah y
       assert.equal(data.appVersion, version);
       if (name === f.config.name) assert.equal(data.annotations['dsx.nvidia.com/source-revision'], revision);
     }
+  });
+});
+
+test('check-existing chart mode is fail-closed and read-only', {
+  skip: !yq && 'Mike Farah yq v4 is not installed',
+}, async (t) => {
+  await t.test('returns 0 only after the indexed artifact metadata is verified', (t) => {
+    const f = fixture(t);
+    const before = snapshot(f.source);
+    success(f.checkExisting(f.publishedArtifact()));
+    assert.deepEqual(f.events().map(({ args }) => args.slice(0, 2)), [
+      ['repo', 'update'], ['search', 'repo'], ['pull', 'helm-repo-ngc/example-service'], ['show', 'chart'],
+    ]);
+    assert.deepEqual(snapshot(f.source), before);
+    assert.deepEqual(fs.readdirSync(f.temporary), []);
+  });
+
+  for (const [name, rows] of [
+    ['empty index result', []],
+    ['different version', [{ name: 'helm-repo-ngc/example-service', version: '2.8.0-rc.2' }]],
+    ['substring names and other repositories', [
+      { name: 'helm-repo-ngc/example-service-extra', version },
+      { name: 'other/helm-repo-ngc/example-service', version },
+    ]],
+  ]) {
+    await t.test(`returns 3 only after a fresh index confirms absence: ${name}`, (t) => {
+      const f = fixture(t);
+      const before = snapshot(f.source);
+      const result = f.checkExisting({}, { TEST_SEARCH_RESULTS: JSON.stringify(rows) });
+      assert.equal(result.status, 3, result.stderr);
+      assert.equal(result.signal, null);
+      assert.match(result.stdout, /absent from the fresh NGC index/);
+      assert.deepEqual(f.events().map(({ args }) => args.slice(0, 2)), [['repo', 'update'], ['search', 'repo']]);
+      assert.deepEqual(snapshot(f.source), before);
+      assert.deepEqual(fs.readdirSync(f.temporary), []);
+    });
+  }
+
+  const matchingRow = { name: 'helm-repo-ngc/example-service', version };
+  for (const [name, options, expectedCalls] of [
+    ['index authentication failure', { TEST_REPO_FAILURES: 'always', TEST_ERROR: '401 Unauthorized' }, 1],
+    ['index network failure', { TEST_REPO_FAILURES: 'always', TEST_ERROR: 'connection refused' }, 1],
+    ['index refresh warns about discarded entries', { TEST_REPO_WARNING: 'true', TEST_SEARCH_RESULTS: '[]' }, 1],
+    ['search command failure', { TEST_SEARCH_FAILURE: 'true' }, 2],
+    ['search warns about corrupt cache but exits zero', { TEST_SEARCH_WARNING: 'true', TEST_SEARCH_RESULTS: '[]' }, 2],
+    ['invalid JSON', { TEST_SEARCH_RESULTS: 'bad json' }, 2],
+    ['empty search output', { TEST_SEARCH_RESULTS: '' }, 2],
+    ['non-array output', { TEST_SEARCH_RESULTS: '{}' }, 2],
+    ['invalid row', { TEST_SEARCH_RESULTS: '[null]' }, 2],
+    ['missing version', { TEST_SEARCH_RESULTS: '[{"name":"helm-repo-ngc/example-service"}]' }, 2],
+    ['duplicate version rows', { TEST_SEARCH_RESULTS: JSON.stringify([matchingRow, matchingRow]) }, 2],
+    ['indexed artifact returns HTTP 404', { TEST_PULL_FAILURES: 'always', TEST_ERROR: '404 Not Found' }, 3],
+    ['indexed artifact rejects authentication', { TEST_PULL_FAILURES: 'always', TEST_ERROR: '401 Unauthorized' }, 3],
+    ['missing downloaded archive', { TEST_NO_ARCHIVE: 'true' }, 3],
+    ['corrupt archive', { TEST_SHOW_FAILURE: 'true' }, 4],
+  ]) {
+    await t.test(`${name} returns 1, never missing or a prepare/publish operation`, (t) => {
+      const f = fixture(t);
+      const before = snapshot(f.source);
+      const result = f.checkExisting(f.publishedArtifact(), options);
+      failure(result);
+      assert.equal(result.status, 1, result.stderr);
+      const events = f.events();
+      assert.equal(events.length, expectedCalls);
+      assert.ok(events.every(({ command, args }) => command === 'helm' &&
+        ['repo', 'search', 'pull', 'show'].includes(args[0])));
+      assert.deepEqual(snapshot(f.source), before);
+      assert.deepEqual(fs.readdirSync(f.temporary), []);
+    });
+  }
+
+  await t.test('mismatched existing metadata returns 1 without source changes', (t) => {
+    const f = fixture(t);
+    const before = snapshot(f.source);
+    const result = f.checkExisting(f.publishedArtifact({ annotations: {} }));
+    failure(result, /metadata does not match/);
+    assert.equal(result.status, 1);
+    assert.equal(f.events().length, 4);
+    assert.deepEqual(snapshot(f.source), before);
+    assert.deepEqual(fs.readdirSync(f.temporary), []);
+  });
+
+  await t.test('actual Helm search detects an RC index entry only when prereleases are included', {
+    skip: !helm && 'Helm v3 is not installed',
+  }, (t) => {
+    const f = fixture(t);
+    fs.mkdirSync(f.env.HELM_REPOSITORY_CACHE, { recursive: true });
+    fs.writeFileSync(f.env.HELM_REPOSITORY_CONFIG, JSON.stringify({
+      apiVersion: 'v1', repositories: [{ name: 'helm-repo-ngc', url: 'https://example.invalid/charts' }],
+    }));
+    fs.writeFileSync(path.join(f.env.HELM_REPOSITORY_CACHE, 'helm-repo-ngc-index.yaml'), JSON.stringify({
+      apiVersion: 'v1', entries: { [f.config.name]: [{
+        apiVersion: 'v2', name: f.config.name, version, appVersion: version,
+        urls: [`https://example.invalid/charts/${f.config.name}-${version}.tgz`],
+      }] },
+    }));
+    const defaultSearch = f.run(helm, ['search', 'repo', `helm-repo-ngc/${f.config.name}`, '--versions', '--output', 'json']);
+    success(defaultSearch);
+    assert.deepEqual(JSON.parse(defaultSearch.stdout), []);
+    success(f.checkExisting(f.publishedArtifact(), { TEST_REAL_SEARCH: 'true' }));
+    assert.ok(f.events().find(({ args }) => args[0] === 'search').args.includes('--devel'));
+    assert.deepEqual(fs.readdirSync(f.temporary), []);
+  });
+
+  await t.test('unknown arguments fail before repository access', (t) => {
+    const f = fixture(t);
+    const result = f.verify({}, {}, [], ['--unknown']);
+    failure(result, /Usage/);
+    assert.equal(result.status, 1);
+    assert.deepEqual(f.events(), []);
   });
 });
 

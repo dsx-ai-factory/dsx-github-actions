@@ -79,7 +79,7 @@ The wrapper accepts these string inputs.
 
 | Input | Default | Meaning |
 | --- | --- | --- |
-| `runner` | `ubuntu-latest` | Approved Linux runner for preflight and publishing. |
+| `runner` | Required, no default | Approved Linux runner for preflight and publishing. |
 | `default-branch` | Caller repository's default branch | Separate stable-history branch used for version calculation. |
 | `images` | `[]` | JSON array of image declarations. |
 | `charts` | `[]` | JSON array of chart declarations. |
@@ -149,7 +149,8 @@ Configure these prerequisites before enabling RC publication.
 - Grant `contents: write` for source release publication. Authorize the workflow token or approved Deploy Key for tag and channel-note writes.
 - Restrict the selected GitHub environment to approved protected release branches. Configure any required environment approvals.
 - Store `NGC_DSX_COMPONENTS_PUSH_KEY` in that environment, scoped to the selected NGC destination.
-- Use an approved Linux runner with Git, Bash, `gh`, `jq`, and Docker for image publishing. The source publisher requires non-cone sparse checkout support. Shared jobs install Node, Helm, and `yq` as needed.
+- Set `runner` explicitly to an approved Linux runner with Git, Bash, `gh`, and `jq`. The source publisher requires non-cone sparse checkout support. Shared jobs install Node, Helm, and `yq` as needed.
+- When images are declared, the runner must have Docker and a readable `/etc/buildkit/buildkitd.toml`, as required by the shared `docker-build` action. Preflight fails before source tag creation if either prerequisite is missing.
 - Keep stable and RC publishing triggers disjoint. A release-worthy change and compatible stable history are required; a branch name alone does not force a release.
 
 ### NGC Credentials
@@ -249,6 +250,7 @@ jobs:
 Replace the branch and full commit SHA for your repository.
 This workflow requires no NGC manifest, environment, or registry credential.
 Its inputs remain `runner` and `default-branch`; its optional secret remains `release-deploy-key`.
+The source-only `runner` remains optional and defaults to `ubuntu-latest`.
 The Deploy Key and `GITHUB_TOKEN` roles are identical to those described above.
 
 The source-only outputs remain `should-publish`, `version`, `tag`, `reused-existing-tag`, and `release-url`.
@@ -313,11 +315,17 @@ An unexpected registry failure or revision mismatch fails the job instead of ove
 ## Helm Job
 
 The wrapper creates shared matrix jobs from `charts`.
-Each job validates chart metadata and declared local dependencies, then stamps the RC version and source revision.
+Each job checks a freshly fetched, authenticated NGC index before chart preparation or packaging.
+If the version exists, the job downloads the chart and verifies its name, `version`, `appVersion`, and `dsx.nvidia.com/source-revision` annotation.
+A matching chart is reused without dependency resolution, metadata preparation, or packaging.
+Authentication, index, download, and metadata errors fail the job; they do not mean that the chart is missing.
+
+Only a version confirmed missing from that index proceeds to preparation and packaging.
+The job validates chart metadata and declared local dependencies, then stamps the RC version and source revision.
 It aligns the explicitly listed local dependencies before running Helm dependency resolution and packaging.
 No Exchange-specific dependency name is encoded in shared code.
 
-Chart publication uses duplicate-skip behavior, followed by verification of the downloadable chart.
+Publication of a missing chart uses duplicate-skip behavior, followed by verification of the downloadable chart.
 The downloaded chart must have the expected name, `version`, `appVersion`, and `dsx.nvidia.com/source-revision` annotation.
 Duplicate-skip alone is not acceptance.
 The shared verifier uses bounded retries for chart visibility in NGC and fails on a metadata mismatch.
@@ -364,7 +372,8 @@ the intended artifact version would be ambiguous.
 
 A failed first run can leave only some artifacts behind.
 Each shared artifact job handles its immutable version independently; source-tag reuse does not skip all artifact jobs.
-The wrapper reuses verified images and checks downloaded charts after duplicate-skip publication.
+The wrapper reuses verified images and checks existing charts before preparation or packaging.
+Matching charts skip dependency resolution and packaging; only confirmed missing chart versions are built and then verified after publication.
 An existing artifact with the wrong revision fails verification and is not overwritten.
 Check that all declared images and charts exist at the resolved version before accepting the rerun.
 
