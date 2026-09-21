@@ -30,15 +30,18 @@ function createConfig(branch, defaultBranch) {
   };
 }
 
-module.exports = { createConfig };
-
-if (require.main === module) {
-  const config = createConfig(process.env.GITHUB_REF_NAME, process.env.RC_DEFAULT_BRANCH);
-  const repository = process.env.GITHUB_REPOSITORY || "";
+function repositoryUrl(repository, useSsh = false) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
     throw new Error("A GitHub owner/repository is required");
   }
-  config.repositoryUrl = `https://github.com/${repository}.git`;
+  return useSsh ? `git@github.com:${repository}.git` : `https://github.com/${repository}.git`;
+}
+
+module.exports = { createConfig, repositoryUrl };
+
+if (require.main === module) {
+  const config = createConfig(process.env.GITHUB_REF_NAME, process.env.RC_DEFAULT_BRANCH);
+  config.repositoryUrl = repositoryUrl(process.env.GITHUB_REPOSITORY || "", process.env.RC_GIT_SSH === "true");
   // Only the disposable sparse checkout receives a configuration file.
   writeFileSync(".releaserc.json", `${JSON.stringify(config, null, 2)}\n`, { flag: "wx" });
 }

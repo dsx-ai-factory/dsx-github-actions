@@ -14,6 +14,10 @@ on:
         description: Stable history branch, defaults to the repository default branch
         type: string
         default: ""
+    secrets:
+      release-deploy-key:
+        description: Optional repository-scoped SSH deploy key authorized to push RC tags and channel notes
+        required: false
     outputs:
       should-publish:
         description: Whether this commit has a verified RC for downstream artifacts
@@ -64,6 +68,7 @@ jobs:
         with:
           fetch-depth: 0
           path: release-source
+          ssh-key: ${{ secrets.release-deploy-key }}
           submodules: false
           sparse-checkout-cone-mode: false
           sparse-checkout: /.github/
@@ -89,6 +94,7 @@ jobs:
       - name: Configure the isolated RC publisher
         env:
           RC_DEFAULT_BRANCH: ${{ inputs.default-branch || github.event.repository.default_branch }}
+          RC_GIT_SSH: ${{ secrets.release-deploy-key != '' }}
         run: node ../dsx-rc-actions/.github/actions/release-candidate/config.cjs
       - name: Detect an existing RC before semantic-release
         id: existing

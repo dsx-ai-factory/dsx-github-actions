@@ -17,6 +17,18 @@ files, `.releaserc` changes or custom scripts are required.
 | `runner` | `ubuntu-latest` | Approved Linux runner for the release job. Central checks use `ubuntu-latest`. |
 | `default-branch` | Empty, resolved to the caller repository's default branch | Separate stable-history branch used for version calculation. |
 
+### Optional Secret
+
+| Secret | Default | Purpose |
+| --- | --- | --- |
+| `release-deploy-key` | Not provided | Repository-scoped, write-enabled SSH deploy key authorized by the repository's tag rules. Used only in the source release job for Git operations, not central checks or the shared-code checkout. |
+
+When provided, the source checkout uses the key and the generated release
+configuration uses `git@github.com:OWNER/REPO.git`. Without it, Git continues
+using HTTPS and `GITHUB_TOKEN`. In both modes, `GITHUB_TOKEN` with
+`contents: write` handles GitHub Release API calls. See the
+[onboarding example](../../docs/release-candidate-publishing.md#optional-deploy-key-authentication).
+
 ### Contract
 
 - GitHub.com only, using `job.workflow_repository` and `job.workflow_sha` to

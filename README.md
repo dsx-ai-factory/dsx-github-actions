@@ -56,6 +56,11 @@ prereleases from a protected `release/X.Y.Z` branch. No product Node files,
 configuration stays unchanged. Replace `REPLACE_WITH_REVIEWED_COMMIT_SHA` in
 the example with a reviewed commit containing the shared workflow before use.
 
+If tag rules require a repository Deploy Key, pass the optional
+[`release-deploy-key` secret](docs/release-candidate-publishing.md#optional-deploy-key-authentication).
+Git uses SSH in that mode; `GITHUB_TOKEN` still handles GitHub Release API
+calls. Without the secret, the existing HTTPS/token behavior is unchanged.
+
 The workflow does not publish NGC artifacts or update stable/major tags.
 Its outputs feed product-native image/chart jobs. The
 [RC onboarding guide](docs/release-candidate-publishing.md) retains the

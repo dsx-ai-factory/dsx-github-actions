@@ -43,6 +43,10 @@ Existing tags are detected before semantic-release to support reruns.
 
 - Inputs are `runner` (default `ubuntu-latest`) and `default-branch` (default
   the caller repository's default branch). Central checks use `ubuntu-latest`.
+- The optional `release-deploy-key` secret enables SSH for source Git
+  operations. Configuration receives only a boolean selecting the canonical
+  SSH URL, never the key. Without it, Git uses HTTPS; GitHub Release API calls
+  use `GITHUB_TOKEN` in either mode. Central checks do not receive the key.
 - The caller must configure protected source/tag rules, approved source and
   required product tests, and grant `contents: write` to `GITHUB_TOKEN`.
   Shared contract checks do not approve source changes or run product tests.

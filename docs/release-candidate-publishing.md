@@ -66,9 +66,10 @@ tags such as `v1`.
 - Protect the exact `release/X.Y.Z` branch with PR review, Code Owner approval
   and required product tests. The source commit must be approved and tested;
   central RC contract checks do not run the product's test suite.
-- Permit the workflow's `GITHUB_TOKEN` to create RC tags, release channel
-  notes and GitHub prereleases with `contents: write`. Configure tag rules to
-  prevent unauthorized creation or movement; do not bypass protections.
+- Grant `contents: write` to `GITHUB_TOKEN` for GitHub prereleases. For Git
+  tags and channel notes, authorize either this token or the optional
+  repository Deploy Key described below. Configure tag rules to prevent
+  unauthorized creation or movement; do not weaken existing protections.
 - The pushed commit must still be the current remote release-branch head.
   Old runs are rejected after the branch advances. Choose a target consistent
   with stable history and release-worthy Conventional Commits; naming a
@@ -79,6 +80,43 @@ tags such as `v1`.
 - Keep stable and RC publishing triggers disjoint. The optional
   `default-branch` input defaults to the caller repository's default branch
   and supplies stable history, not permission to publish stable releases.
+
+### Optional Deploy Key Authentication
+
+Some repositories, including Exchange, permit release-tag writes only through
+an approved Deploy Key. `contents: write` on `GITHUB_TOKEN` does not override
+those tag rules. Pass the existing repository-scoped, write-enabled deploy key
+to the reusable release job:
+
+```yaml
+jobs:
+  release:
+    uses: dsx-ai-factory/dsx-github-actions/.github/workflows/release-candidate.yml@REPLACE_WITH_REVIEWED_COMMIT_SHA
+    permissions:
+      contents: write
+    secrets:
+      release-deploy-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
+```
+
+Pin a reviewed commit containing this optional-secret support. Register the
+public key as a write-enabled deploy key for the product repository, store the
+private key in the caller's repository or scoped organization secret, and
+authorize that Deploy Key in the applicable tag rules. Do not relax tag rules
+to make the workflow pass. Environment secrets cannot be passed to a reusable
+workflow through this caller-level `secrets` mapping.
+
+The source checkout uses SSH and semantic-release receives the canonical
+`git@github.com:OWNER/REPO.git` URL for Git operations. `GITHUB_TOKEN` remains
+the credential for GitHub Release API calls. Only a boolean indicating that
+the key exists reaches the configuration helper; the key is not printed or
+written to release configuration. The shared-code checkout and central tests
+do not receive the key.
+
+Omit this secret in repositories whose rules already permit the workflow token.
+Their existing HTTPS behavior is unchanged. This option does not alter stable
+publishing or grant additional permissions. Verify the first real RC and its
+rerun in the product repository: local contract tests cannot prove live key
+validity or ruleset authorization.
 
 ### Shared Release Contract
 
