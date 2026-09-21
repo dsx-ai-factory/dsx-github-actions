@@ -1,0 +1,20 @@
+{
+  "_comment": [
+    "SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.",
+    "SPDX-License-Identifier: Apache-2.0"
+  ],
+  "name": "shared-release-candidate-tests",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24.10.0 <25"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 --test-timeout=180000 *.test.cjs"
+  },
+  "devDependencies": {
+    "conventional-changelog-conventionalcommits": "9.3.1",
+    "semantic-release": "25.0.9"
+  }
+}

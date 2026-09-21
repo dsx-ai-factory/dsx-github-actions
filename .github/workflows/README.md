@@ -2,6 +2,64 @@
 
 This directory contains automated workflows for the dsx-github-actions repository.
 
+## Release Candidate (`release-candidate.yml`)
+
+Recommended `workflow_call` entry point for source-only RC releases. Start
+with the [13-line consumer workflow](../../docs/release-candidate-publishing.md#recommended-minimal-workflow).
+Replace its `REPLACE_WITH_REVIEWED_COMMIT_SHA` placeholder with a full
+reviewed commit containing this workflow before enabling it. No product Node
+files, `.releaserc` changes or custom scripts are required.
+
+### Inputs
+
+| Input | Default | Purpose |
+| --- | --- | --- |
+| `runner` | `ubuntu-latest` | Approved Linux runner for the release job. Central checks use `ubuntu-latest`. |
+| `default-branch` | Empty, resolved to the caller repository's default branch | Separate stable-history branch used for version calculation. |
+
+### Contract
+
+- GitHub.com only, using `job.workflow_repository` and `job.workflow_sha` to
+  check out the called workflow's shared code and tests at the same revision.
+  GHES is outside this implementation's scope; no circular self-pin is needed.
+- [Central RC checks](release-candidate-checks.yml) must pass before the
+  release job. These check the shared contract, not product tests.
+- Publishing requires a push to an exact, protected `release/X.Y.Z` branch
+  whose current remote head matches the event commit. Product approval/tests
+  and tag rules must be configured beforehand. The caller grants
+  `contents: write` to the workflow's `GITHUB_TOKEN`.
+- A full-history, non-cone sparse `release-source` checkout excludes product
+  root configuration/package files. RC configuration is generated there;
+  shared helpers live in sibling `dsx-rc-actions`. Product stable-release
+  configuration is unchanged. The Linux runner needs Git with non-cone sparse
+  support, Bash, `gh` and `jq`; the workflow sets up Node itself.
+- The calculated version must be `X.Y.Z-rc.N` with a positive, canonical RC
+  sequence. Both the preview and actual publication are guarded, including
+  semantic-release's `verifyRelease` phase before tag creation.
+- Reruns verify the existing source tag and `rc` channel metadata, then verify
+  or recover the non-draft GitHub prerelease. Ambiguous tags or invalid
+  metadata fail closed. Runs for an old branch head are rejected.
+- Only source RC tags and GitHub prereleases are published, not stable/major
+  tags or NGC artifacts. No access to private dependency repositories or
+  registry secrets is required.
+
+### Outputs
+
+| Output | Description |
+| --- | --- |
+| `should-publish` | `true` only after the source RC and GitHub prerelease are verified. |
+| `version` | RC version without `v`. |
+| `tag` | Source RC Git tag. |
+| `reused-existing-tag` | Whether this run reused an existing RC tag. |
+| `release-url` | Verified GitHub prerelease URL. |
+
+Product-native NGC jobs use `needs: release`, gate on
+`needs.release.outputs.should-publish == 'true'`, check out the `tag` and use
+the `version` for artifacts. Keep registry credentials and artifact
+verification in those jobs. See the [helper reference](../actions/release-candidate/README.md)
+and the preserved [advanced Exchange composition](../../docs/release-candidate-publishing.md#advanced-composition)
+for repository-owned plugins or custom release policy.
+
 ## Promote Image (`promote-image.yml`)
 
 A reusable workflow that copies OCI images between registries (e.g., from NGC to GHCR or between repositories) using `skopeo`.

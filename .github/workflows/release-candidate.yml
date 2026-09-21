@@ -1,0 +1,145 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Release candidate
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: GitHub-hosted or approved Linux runner
+        type: string
+        default: ubuntu-latest
+      default-branch:
+        description: Stable history branch, defaults to the repository default branch
+        type: string
+        default: ""
+    outputs:
+      should-publish:
+        description: Whether this commit has a verified RC for downstream artifacts
+        value: ${{ jobs.release.outputs.should-publish }}
+      version:
+        description: RC version without the v prefix
+        value: ${{ jobs.release.outputs.version }}
+      tag:
+        description: Immutable source RC tag
+        value: ${{ jobs.release.outputs.tag }}
+      reused-existing-tag:
+        description: Whether this run reused an existing RC tag
+        value: ${{ jobs.release.outputs.reused-existing-tag }}
+      release-url:
+        description: Verified GitHub prerelease URL
+        value: ${{ jobs.release.outputs.release-url }}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dsx-release-candidate-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/release-candidate-checks.yml
+    permissions:
+      contents: read
+
+  release:
+    needs: checks
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    outputs:
+      should-publish: ${{ steps.verify.outcome == 'success' && steps.rc.outputs.should-publish || 'false' }}
+      version: ${{ steps.rc.outputs.version }}
+      tag: ${{ steps.rc.outputs.tag }}
+      reused-existing-tag: ${{ steps.rc.outputs.reused-existing-tag }}
+      release-url: ${{ steps.verify.outputs.release-url }}
+    defaults:
+      run:
+        working-directory: release-source
+    steps:
+      - name: Checkout source history without product release configuration
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          path: release-source
+          submodules: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: /.github/
+      - name: Require the reusable workflow revision
+        if: job.workflow_sha == ''
+        run: |
+          echo "::error::Reusable workflow SHA is unavailable"
+          exit 1
+      - name: Checkout shared release implementation at the workflow revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: dsx-rc-actions
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - name: Require a protected release branch and its current head
+        env:
+          RC_REF_PROTECTED: ${{ github.ref_protected }}
+        run: bash ../dsx-rc-actions/.github/actions/release-candidate/check-source.sh
+      - name: Configure the isolated RC publisher
+        env:
+          RC_DEFAULT_BRANCH: ${{ inputs.default-branch || github.event.repository.default_branch }}
+        run: node ../dsx-rc-actions/.github/actions/release-candidate/config.cjs
+      - name: Detect an existing RC before semantic-release
+        id: existing
+        uses: ./dsx-rc-actions/.github/actions/resolve-release-candidate
+        with:
+          working-directory: release-source
+      - name: Verify existing RC source and channel metadata
+        if: steps.existing.outputs.should-publish == 'true'
+        env:
+          RC_TAG: ${{ steps.existing.outputs.tag }}
+          RC_VERSION: ${{ steps.existing.outputs.version }}
+        run: bash ../dsx-rc-actions/.github/actions/release-candidate/verify-existing-tag.sh
+      - name: Preview the release candidate
+        id: preview
+        if: steps.existing.outputs.should-publish != 'true'
+        uses: ./dsx-rc-actions/.github/actions/semantic-release
+        with:
+          working-directory: release-source
+          semantic-version: 25.0.9
+          extra-plugins: conventional-changelog-conventionalcommits@9.3.1
+          dry-run: "true"
+      - name: Validate the candidate before publishing
+        if: steps.preview.outputs.new-release-published == 'true'
+        env:
+          RC_VERSION: ${{ steps.preview.outputs.new-release-version }}
+        run: node ../dsx-rc-actions/.github/actions/release-candidate/validate-version.cjs
+      - name: Publish the release candidate
+        id: semantic
+        if: steps.existing.outputs.should-publish != 'true'
+        uses: ./dsx-rc-actions/.github/actions/semantic-release
+        with:
+          working-directory: release-source
+          semantic-version: 25.0.9
+          extra-plugins: conventional-changelog-conventionalcommits@9.3.1
+      - name: Resolve the new or existing RC
+        id: rc
+        uses: ./dsx-rc-actions/.github/actions/resolve-release-candidate
+        with:
+          working-directory: release-source
+          new-release-published: ${{ steps.semantic.outputs.new-release-published || 'false' }}
+          new-release-version: ${{ steps.semantic.outputs.new-release-version }}
+          new-release-git-tag: ${{ steps.semantic.outputs.new-release-git-tag }}
+      - name: Verify or recover the GitHub prerelease
+        id: verify
+        if: steps.rc.outputs.should-publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RC_TAG: ${{ steps.rc.outputs.tag }}
+          RC_VERSION: ${{ steps.rc.outputs.version }}
+        run: bash ../dsx-rc-actions/.github/actions/release-candidate/verify-prerelease.sh
+      - name: Report no release-worthy changes
+        if: steps.rc.outputs.should-publish != 'true'
+        run: echo "No RC on this commit. No tag or release was created." >> "$GITHUB_STEP_SUMMARY"
