@@ -26,7 +26,10 @@ files, `.releaserc` changes or custom scripts are required.
 When provided, the source checkout uses the key and the generated release
 configuration uses `git@github.com:OWNER/REPO.git`. Without it, Git continues
 using HTTPS and `GITHUB_TOKEN`. In both modes, `GITHUB_TOKEN` with
-`contents: write` handles GitHub Release API calls. See the
+`contents: write` handles GitHub Release API calls; `GH_TOKEN` is set to that
+same workflow token rather than inherited from the runner. Deploy Key mode
+requires a successful SSH push dry run with a one-minute timeout before
+publishing, so an unusable key fails before token fallback. See the
 [onboarding example](../../docs/release-candidate-publishing.md#optional-deploy-key-authentication).
 
 ### Contract

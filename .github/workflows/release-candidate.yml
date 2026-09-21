@@ -53,6 +53,9 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RC_GIT_SSH: ${{ secrets.release-deploy-key != '' }}
     outputs:
       should-publish: ${{ steps.verify.outcome == 'success' && steps.rc.outputs.should-publish || 'false' }}
       version: ${{ steps.rc.outputs.version }}
@@ -94,8 +97,13 @@ jobs:
       - name: Configure the isolated RC publisher
         env:
           RC_DEFAULT_BRANCH: ${{ inputs.default-branch || github.event.repository.default_branch }}
-          RC_GIT_SSH: ${{ secrets.release-deploy-key != '' }}
         run: node ../dsx-rc-actions/.github/actions/release-candidate/config.cjs
+      - name: Require working Deploy Key push authentication
+        if: env.RC_GIT_SSH == 'true'
+        timeout-minutes: 1
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: bash ../dsx-rc-actions/.github/actions/release-candidate/check-git-auth.sh
       - name: Detect an existing RC before semantic-release
         id: existing
         uses: ./dsx-rc-actions/.github/actions/resolve-release-candidate

@@ -112,6 +112,13 @@ the key exists reaches the configuration helper; the key is not printed or
 written to release configuration. The shared-code checkout and central tests
 do not receive the key.
 
+Before publishing, a one-minute SSH `git push --dry-run` checks the key's
+push access without changing remote refs. An invalid or read-only key stops
+the workflow before semantic-release can fall back to HTTPS. `GH_TOKEN` is
+set to the workflow token, so a runner's inherited token cannot override the
+GitHub Release API credential. This preflight verifies authentication, not
+whether every tag-specific rule will accept the eventual release.
+
 Omit this secret in repositories whose rules already permit the workflow token.
 Their existing HTTPS behavior is unchanged. This option does not alter stable
 publishing or grant additional permissions. Verify the first real RC and its

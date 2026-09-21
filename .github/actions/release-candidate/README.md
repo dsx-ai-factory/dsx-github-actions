@@ -27,6 +27,7 @@ The product's stable-release configuration remains unchanged.
 | File | Responsibility |
 | --- | --- |
 | `check-source.sh` | Require an exact `release/X.Y.Z` push, protected ref, full history and a checked-out event commit that is still the remote branch head. |
+| `check-git-auth.sh` | In Deploy Key mode, require an SSH push dry run before publishing. No remote refs change; authentication failure stops the workflow before semantic-release can fall back to a token. |
 | `config.cjs` | Generate isolated Conventional Commits RC configuration with a separate stable-history branch, `v${version}` tags, the version guard and GitHub prerelease publishing. |
 | `validate-version.cjs` | Require `X.Y.Z-rc.N` to match the branch, with a positive sequence and no leading zeros. Exposes both a CLI preview guard and semantic-release's actual-publication `verifyRelease` guard. |
 | `verify-existing-tag.sh` | Verify a rerun tag's version, source commit and semantic-release `rc` channel notes before reusing it. Missing or invalid metadata requires maintainer repair. |
