@@ -34,6 +34,11 @@ jobs:
         run: npm ci --ignore-scripts --prefix .github/actions/release-candidate/tests
       - name: Test release contracts against local Git repositories
         run: npm test --prefix .github/actions/release-candidate/tests
+      - uses: dcarbone/install-yq-action@64b1b9eb28920bb1a4c13c05321df284f9a8f940 # v1.1.1
+      - name: Install Helm for local chart packaging tests
+        run: bash .github/actions/helm-shared/scripts/install-helm.sh
+      - name: Test artifact planning, preparation, and verification
+        run: node --test .github/actions/release-artifacts/tests/*.test.cjs
       - name: Test the existing RC resolver
         run: .github/actions/resolve-release-candidate/test.sh
       - name: Prepare a separate local checkout for the resolver smoke test
