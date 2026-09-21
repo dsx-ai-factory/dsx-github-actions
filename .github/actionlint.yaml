@@ -11,3 +11,11 @@ paths:
     ignore:
       # Remove when actionlint supports the called workflow's job.workflow_sha.
       - '^property "workflow_sha" is not defined in object type \{check_run_id: number; container:'
+  .github/workflows/release-candidate.yml:
+    ignore:
+      # GitHub.com supports workflow identity; actionlint 1.7.12 does not yet.
+      - '^property "workflow_(sha|repository)" is not defined in object type \{check_run_id: number; container:'
+  .github/workflows/release-candidate-checks.yml:
+    ignore:
+      # Keep this exception limited to the two documented job properties.
+      - '^property "workflow_(sha|repository)" is not defined in object type \{check_run_id: number; container:'

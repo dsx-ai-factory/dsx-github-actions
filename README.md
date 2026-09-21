@@ -28,6 +28,7 @@ A collection of reusable GitHub Actions for standardizing CI/CD workflows across
 | ------------------------------------------------------------------------ | ----------------------------------------------------- | --------------------------------------- |
 | [promote-image](.github/workflows/promote-image.yml) | Re-tag and re-publish multi-arch images via `skopeo` | Promote OCI images across registries |
 | [docker-build](.github/workflows/docker-build.yml) | Reusable workflow wrapper for Docker build/push | Share Docker build logic across repos |
+| [release-candidate](.github/workflows/release-candidate.yml) | Protected-branch source RC tags and GitHub prereleases | Shared RC policy with outputs for product publishing jobs |
 
 ## ⚠️ Important: GitHub Advanced Security Required
 
@@ -48,11 +49,19 @@ Without GHAS enabled, scans will run successfully but uploads will fail. See ind
 
 ### Enable Release Candidates for Your Component
 
-Follow the [RC onboarding guide](docs/release-candidate-publishing.md) to add
-protected release branches, `vX.Y.Z-rc.N` tags and matching NGC images/charts.
-It uses **dsx-exchange** as a worked example and includes setup, tag behavior,
-first-release checks, safe reruns and the handoff to an SBOM.
-Start with [Onboard Your Repository](docs/release-candidate-publishing.md#onboard-your-repository).
+Start with the [recommended minimal RC workflow](docs/release-candidate-publishing.md#recommended-minimal-workflow).
+One reusable-workflow job creates `vX.Y.Z-rc.N` source tags and GitHub
+prereleases from a protected `release/X.Y.Z` branch. No product Node files,
+`.releaserc` changes or custom scripts are required; stable-release
+configuration stays unchanged. Replace `REPLACE_WITH_REVIEWED_COMMIT_SHA` in
+the example with a reviewed commit containing the shared workflow before use.
+
+The workflow does not publish NGC artifacts or update stable/major tags.
+Its outputs feed product-native image/chart jobs. The
+[RC onboarding guide](docs/release-candidate-publishing.md) retains the
+step-by-step **dsx-exchange** example for
+[advanced composition](docs/release-candidate-publishing.md#advanced-composition),
+including artifact verification, safe reruns and the SBOM handoff.
 
 ### Security Scanning (Rust)
 
@@ -133,6 +142,8 @@ This reusable workflow wraps `skopeo copy`, so it copies the entire manifest lis
 - [Commitlint Action](.github/actions/commitlint/README.md)
 - [Helm Unit Tests Action](.github/actions/helm-unittest/README.md)
 - [Workflows Guide](.github/workflows/README.md)
+- [Shared Release Candidate Workflow](.github/workflows/README.md#release-candidate-release-candidateyml)
+- [Shared Release Candidate Helpers](.github/actions/release-candidate/README.md)
 - [Release Candidate Artifact Publishing](docs/release-candidate-publishing.md)
 
 ## 🎯 Features

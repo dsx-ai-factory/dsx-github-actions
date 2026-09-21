@@ -5,6 +5,10 @@ name: "Resolve Release Candidate"
 description: "Select an RC produced by semantic-release, including idempotent workflow reruns"
 
 inputs:
+  working-directory:
+    description: "Git checkout used to resolve release candidate tags"
+    required: false
+    default: "."
   new-release-published:
     description: "Whether semantic-release published a release in this run"
     required: false
@@ -46,6 +50,7 @@ runs:
     - name: Resolve release candidate
       id: resolve
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       env:
         NEW_RELEASE_PUBLISHED: ${{ inputs.new-release-published }}
         NEW_RELEASE_VERSION: ${{ inputs.new-release-version }}

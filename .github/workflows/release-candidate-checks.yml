@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: RC contract checks
+
+on:
+  workflow_call:
+  pull_request:
+  push:
+    branches: [main, "pull-request/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require the shared workflow revision
+        if: job.workflow_sha == ''
+        run: |
+          echo "::error::Reusable workflow SHA is unavailable"
+          exit 1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - name: Install shared release test dependencies
+        run: npm ci --ignore-scripts --prefix .github/actions/release-candidate/tests
+      - name: Test release contracts against local Git repositories
+        run: npm test --prefix .github/actions/release-candidate/tests
+      - name: Test the existing RC resolver
+        run: .github/actions/resolve-release-candidate/test.sh
+      - name: Exercise the resolver with an explicit checkout directory
+        id: rc
+        uses: ./.github/actions/resolve-release-candidate
+        with:
+          working-directory: .github
+          new-release-published: "true"
+          new-release-version: "1.2.3-rc.1"
+          new-release-git-tag: "v1.2.3-rc.1"
+      - name: Verify the resolver action outputs
+        env:
+          VERSION: ${{ steps.rc.outputs.version }}
+          SHOULD_PUBLISH: ${{ steps.rc.outputs.should-publish }}
+        run: |
+          [[ "$VERSION" == "1.2.3-rc.1" ]]
+          [[ "$SHOULD_PUBLISH" == "true" ]]

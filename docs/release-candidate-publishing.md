@@ -4,12 +4,16 @@ Use this guide to enable release-candidate (RC) tags and publish matching
 images and Helm charts from a GitHub-hosted component. **dsx-exchange is the
 worked example**, not a requirement to use its component names or version.
 
-Adding a shared action alone does not enable RCs. Your repository still owns
-its branch configuration, workflow triggers, publishing permissions and
-artifact paths. A Git tag alone is not a deployable release: the matching
-charts and images must also be published and verified.
+Start with the recommended shared workflow for source RCs. Your repository
+still owns branch protection, approved source/tests, workflow triggers,
+publishing permissions and artifact paths. A Git tag alone is not a deployable
+release: the matching charts and images must also be published and verified
+by product-native jobs. The Exchange step-by-step guide remains available for
+advanced composition with repository-owned plugins or custom release policy.
 
+- [Recommended Minimal Workflow](#recommended-minimal-workflow)
 - [What You Will Get](#what-you-will-get)
+- [Advanced Composition](#advanced-composition)
 - [Onboard Your Repository](#onboard-your-repository)
 - [Contract](#contract)
 - [Release Job](#release-job)
@@ -20,6 +24,108 @@ charts and images must also be published and verified.
 - [Hand Off to the SBOM](#hand-off-to-the-sbom)
 - [Next Release Cycle](#next-release-cycle)
 - [Troubleshooting](#troubleshooting)
+
+## Recommended Minimal Workflow
+
+Add `.github/workflows/release-rc.yml` in the component repository:
+
+```yaml
+name: Release Candidate
+
+on:
+  push:
+    branches:
+      - release/1.2.3
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: dsx-ai-factory/dsx-github-actions/.github/workflows/release-candidate.yml@REPLACE_WITH_REVIEWED_COMMIT_SHA
+```
+
+Replace `release/1.2.3` with your explicit release target. The literal
+`REPLACE_WITH_REVIEWED_COMMIT_SHA` is a placeholder, not a usable ref: replace
+it with the full reviewed commit SHA containing the new workflow, helpers and
+checks once that commit is available. Older pins in the advanced examples do
+not provide this workflow. The shared implementation uses the called job's
+`job.workflow_repository` and `job.workflow_sha`, so it needs no circular
+self-pin to its own future commit.
+
+No Node/package files, `.releaserc` edits or custom scripts are needed in the
+product repository for this source-only path. No access to private dependency
+repositories or NGC credentials is required. The workflow installs its own tooling and does
+not build or publish images/charts, create stable releases or update major
+tags such as `v1`.
+
+### Prerequisites and Scope
+
+- Use GitHub.com, where the called job exposes `job.workflow_repository` and
+  `job.workflow_sha`. This implementation is not a GHES workflow.
+- Protect the exact `release/X.Y.Z` branch with PR review, Code Owner approval
+  and required product tests. The source commit must be approved and tested;
+  central RC contract checks do not run the product's test suite.
+- Permit the workflow's `GITHUB_TOKEN` to create RC tags, release channel
+  notes and GitHub prereleases with `contents: write`. Configure tag rules to
+  prevent unauthorized creation or movement; do not bypass protections.
+- The pushed commit must still be the current remote release-branch head.
+  Old runs are rejected after the branch advances. Choose a target consistent
+  with stable history and release-worthy Conventional Commits; naming a
+  branch does not force that version or a release.
+- Use an approved Linux runner with Git supporting non-cone sparse checkout,
+  Bash, `gh`, `jq` and access to GitHub and the shared tool dependencies.
+  `runner` defaults to `ubuntu-latest`. Shared checks run on `ubuntu-latest`.
+- Keep stable and RC publishing triggers disjoint. The optional
+  `default-branch` input defaults to the caller repository's default branch
+  and supplies stable history, not permission to publish stable releases.
+
+### Shared Release Contract
+
+The [workflow](../.github/workflows/release-candidate.yml) runs
+[central RC checks](../.github/workflows/release-candidate-checks.yml) before
+the publishing job. Checks and shared helpers are checked out from the
+called workflow's repository and SHA, not the caller's product SHA or a
+moving shared branch.
+
+The disposable `release-source` checkout has full Git history but only
+`/.github/` in a non-cone sparse working tree. Product root configuration and
+package files are absent. Shared code lives in the sibling `dsx-rc-actions`
+checkout, and generates RC-only configuration in `release-source`; the
+product's stable-release configuration remains unchanged.
+
+Publishing accepts only a push to the protected, current `release/X.Y.Z`
+head. The version must be `X.Y.Z-rc.N`, with a positive sequence and no leading
+zeros. The guard checks the preview and runs again as semantic-release's
+`verifyRelease` plugin during actual publication, before creating a tag.
+Reruns validate the existing tag's target and `rc` channel metadata before
+reusing it. A missing GitHub prerelease can be recovered for a verified tag;
+an existing draft or non-prerelease is rejected, not overwritten.
+
+### Outputs for Product Publishing Jobs
+
+| Output | Meaning |
+| --- | --- |
+| `should-publish` | `true` only after the source RC and GitHub prerelease are verified; otherwise do not publish artifacts. |
+| `version` | Version without `v`, for example `1.2.3-rc.1`. |
+| `tag` | Source Git tag, for example `v1.2.3-rc.1`. |
+| `reused-existing-tag` | `true` when this run reused an RC tag on the source commit. |
+| `release-url` | Verified GitHub prerelease URL. |
+
+Keep NGC publishing in existing product-native jobs in the same caller
+workflow. Add `needs: release`, gate on
+`needs.release.outputs.should-publish == 'true'`, check out
+`needs.release.outputs.tag` and use `needs.release.outputs.version` for all
+artifacts. Registry credentials, environments, artifact layouts and
+revision/duplicate verification stay with those jobs. The advanced examples
+below alias the gate to `publish-rc`; use `should-publish` with the reusable
+workflow's outputs instead.
+
+For source-only acceptance, confirm central checks succeeded, the tag points
+to the approved commit, the GitHub release is a non-draft prerelease, and a
+rerun of the still-current commit reuses the tag. Product artifact acceptance
+is separate. See the [workflow reference](../.github/workflows/README.md#release-candidate-release-candidateyml)
+and [helper reference](../.github/actions/release-candidate/README.md).
 
 ## What You Will Get
 
@@ -54,7 +160,18 @@ repository requires development-only builds on `main` and final releases from
 a release branch, align that policy separately; do not assume the Exchange
 example already implements it.
 
+## Advanced Composition
+
+The existing Exchange guide below is for repositories that need to own their
+semantic-release plugins or custom release policy. Its `.releaserc` changes,
+Node setup and scripts are **not** prerequisites for the recommended shared
+workflow. These composable examples do not inherit the shared workflow's
+central checks, isolated configuration or actual-publication version guard;
+repositories choosing this path own those controls as well as artifact jobs.
+
 ## Onboard Your Repository
+
+These steps describe the advanced composition path.
 
 ### 1. Check Access and Choose a Release Line
 
@@ -137,6 +254,8 @@ records its original pins. Review action updates as normal dependencies, and
 validate the resulting workflow in your own repository before enabling it.
 
 ## Contract
+
+For advanced composition, the component repository owns this contract:
 
 - Configure semantic-release in the component repository to create versions in
   the form `MAJOR.MINOR.PATCH-rc.NUMBER` from its release branch.
@@ -443,6 +562,13 @@ pass. No cluster deployment is required just to verify publishing.
 
 ## Reruns
 
+The shared workflow detects an existing RC before running semantic-release,
+requires valid `rc` channel metadata, and verifies or recovers the GitHub
+prerelease before returning `should-publish: true`. Missing or invalid channel
+metadata requires maintainer repair, not a new or moved tag. A rerun must
+still be the current remote branch head. The artifact guidance below applies
+when product publishing jobs are enabled.
+
 semantic-release creates the Git tag before downstream artifact jobs run. If a
 later job fails, a workflow rerun normally reports that no new release was
 created. `resolve-release-candidate` handles this by selecting one matching RC
@@ -477,7 +603,9 @@ use version `1.0`.
 ## Next Release Cycle
 
 Agree the next target with the component owner, then update the explicit
-release branch in both `.releaserc.json` and the workflow trigger. Recheck the
+release branch in the workflow trigger. Only the advanced composition path
+also updates `.releaserc.json`; the shared workflow derives RC configuration
+from the event and leaves product configuration unchanged. Recheck the
 protected-branch/tag rules and environment branch policy. Keep only one active
 branch using the `rc` prerelease identifier and validate the new version with
 the dry run. Do not assume creating or renaming a branch alone enables it.
@@ -492,7 +620,9 @@ after stable promotion without deleting or moving its immutable release tags.
 | Symptom | Check / next step |
 | --- | --- |
 | No workflow after merge | The workflow must exist on the pushed branch, and its `on.push.branches` must match. PR validation alone does not run the release job. |
-| Workflow runs, but no new RC | Check the active branch in `.releaserc.json`, action input overrides and release-worthy commits since the last release. A docs/chore-only change may legitimately publish nothing. |
+| Workflow runs, but no new RC | Check the explicit branch target, stable history and release-worthy commits since the last release. For advanced composition, also check `.releaserc.json` and action input overrides. A docs/chore-only change may legitimately publish nothing. |
+| Shared checks fail before publishing | Inspect the central checks at the pinned shared workflow revision. Do not bypass them or substitute product code for the shared checkout. |
+| Source check rejects the run | Verify branch protection, exact `release/X.Y.Z` naming and that the run still targets the current remote branch head. |
 | Version-target check fails | Reconcile the intended branch target with release history and commit semantics. Do not bypass the check or move an existing tag. |
 | Tag/release creation denied | Check the release identity's permissions and tag rules. An NGC credential cannot grant GitHub tag permissions. |
 | Artifact job cannot use the environment/NGC | Check protected branch admission, environment approvals, scoped registry permissions and runner connectivity. Never print credentials. |
