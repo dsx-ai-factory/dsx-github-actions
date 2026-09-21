@@ -36,18 +36,23 @@ jobs:
         run: npm test --prefix .github/actions/release-candidate/tests
       - name: Test the existing RC resolver
         run: .github/actions/resolve-release-candidate/test.sh
+      - name: Prepare a separate local checkout for the resolver smoke test
+        run: |
+          git init --initial-branch=main .rc-resolver-smoke
+          git -C .rc-resolver-smoke -c user.name='RC Test' -c user.email=rc-test@example.invalid \
+            -c core.hooksPath=/dev/null -c commit.gpgsign=false commit --allow-empty -m 'test: local fixture'
+          git -C .rc-resolver-smoke -c tag.gpgsign=false tag v1.2.3-rc.1
       - name: Exercise the resolver with an explicit checkout directory
         id: rc
         uses: ./.github/actions/resolve-release-candidate
         with:
-          working-directory: .github
-          new-release-published: "true"
-          new-release-version: "1.2.3-rc.1"
-          new-release-git-tag: "v1.2.3-rc.1"
+          working-directory: .rc-resolver-smoke
       - name: Verify the resolver action outputs
         env:
           VERSION: ${{ steps.rc.outputs.version }}
           SHOULD_PUBLISH: ${{ steps.rc.outputs.should-publish }}
+          REUSED: ${{ steps.rc.outputs.reused-existing-tag }}
         run: |
           [[ "$VERSION" == "1.2.3-rc.1" ]]
           [[ "$SHOULD_PUBLISH" == "true" ]]
+          [[ "$REUSED" == "true" ]]
