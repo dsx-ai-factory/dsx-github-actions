@@ -175,6 +175,7 @@ copying the example's `main` policy for a tag-based release.
 | `dockerfile` | Path to Dockerfile | No | `Dockerfile` |
 | `platforms` | Target platforms | No | `linux/amd64,linux/arm64` |
 | `push` | Whether to push | No | `false` |
+| `load` | Load a single-platform image into Docker for local tests; cannot be combined with scanning or attestation preparation | No | `false` |
 | `registry` | Registry host for login (`nvcr.io`, `ghcr.io`). Empty means Docker Hub. | No | `""` |
 | `username` | Registry username (used when `push: "true"`) | No | `""` |
 | `password` | Registry password/token (used when `push: "true"`) | No | `""` |
@@ -195,6 +196,7 @@ copying the example's `main` policy for a tag-based release.
 | Output | Description |
 | --- | --- |
 | `digest` | Image digest reported by `docker/build-push-action` |
+| `imageid` | Local image ID for smoke tests when `load: "true"` |
 | `tags` | Normalized fully qualified image refs used for the build |
 | `sbom-artifact-id` | Same-run artifact ID containing per-platform SBOMs and digest mapping |
 | `candidate` | Run-unique candidate reference when preparing attestations (pushed only with `push: true`) |

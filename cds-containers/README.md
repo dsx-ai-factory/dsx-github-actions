@@ -171,11 +171,17 @@ Pushes to `main` and copy-pr-bot branches (`pull-request/**`) build and smoke-te
 all three images. Mirror branches and manual runs test locally loaded images
 without publishing. Only a push to `main` that changes `VERSION` publishes.
 
-For publishing runs, Buildx generates an SPDX SBOM alongside each image. The
-workflow pushes unique staging tags and tests their exact digests. After all
-images pass, it signs build provenance and the existing SBOM for each tested
-digest, storing the attestations in GitHub and GHCR. All three images must pass
-attestation before it checks that every version and SHA tag is
+Publishing runs use the shared `docker-build` action to build once, generate
+per-platform SPDX SBOMs with Syft, and push only unique candidate tags. CDS stays
+on `linux/amd64` with vulnerability scanning disabled; SBOM generation does not
+require scanning. Non-publishing runs use the same action with `load: "true"`
+for local smoke tests, without registry publication or signing.
+
+After all three images pass their existing smoke tests, the shared
+`attest-image.yml` workflow signs provenance for each root and platform digest,
+signs each platform's existing SBOM, and fetches the evidence from GHCR to verify
+it. CDS leaves that workflow's release tags empty so its separate publication job
+still waits for all three images. Only then does it check that every version and SHA tag is
 either unused or already points to that image's tested digest, then creates only
 the missing release tags. Authentication, network, and unexpected registry errors
 stop publication. Only an explicit `MANIFEST_UNKNOWN` response permits a new tag.
@@ -190,25 +196,38 @@ digests; conflicting published tags still require a new `VERSION`.
 
 ### Verifying provenance and SBOMs
 
-Attestations apply to new version releases after this workflow change; existing
-images are not retroactively attested. CDS images currently contain one runtime
-platform, so both attestations identify the same published image index digest.
-Replace `<digest>` below with the digest you intend to use. Authenticate `gh` and
-Docker with access to the repository and package before verifying:
+For releases built with the shared workflow, provenance identifies the root and
+each platform digest; the SPDX attestation identifies the platform manifest,
+not the enclosing index. CDS currently builds only `linux/amd64`. Authenticate
+`gh` and Docker with access to the repository and package before verifying:
 
 ```bash
-image='oci://ghcr.io/dsx-ai-factory/dsx-cds-tools@sha256:<digest>'
-for predicate in https://slsa.dev/provenance/v1 https://spdx.dev/Document/v2.3; do
-  gh attestation verify "$image" \
-    --repo dsx-ai-factory/dsx-github-actions \
-    --signer-workflow dsx-ai-factory/dsx-github-actions/.github/workflows/build-cds-containers.yml \
-    --source-ref refs/heads/main \
-    --predicate-type "$predicate" || exit 1
+image='ghcr.io/dsx-ai-factory/dsx-cds-tools'
+root_digest='sha256:<published-root-digest>'
+source_commit='<full-release-commit-sha>'
+policy=(--repo dsx-ai-factory/dsx-github-actions --source-ref refs/heads/main
+  --source-digest "$source_commit" --signer-digest "$source_commit"
+  --signer-workflow dsx-ai-factory/dsx-github-actions/.github/workflows/attest-image.yml
+  --bundle-from-oci)
+
+manifest="$(docker buildx imagetools inspect "$image@$root_digest" --raw)"
+platform_digest="$(jq -er --arg root "$root_digest" '
+  if has("manifests") then
+    .manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest
+  else $root end' <<< "$manifest")"
+for digest in "$root_digest" "$platform_digest"; do
+  gh attestation verify "oci://$image@$digest" "${policy[@]}" \
+    --predicate-type https://slsa.dev/provenance/v1 || exit 1
 done
+gh attestation verify "oci://$image@$platform_digest" "${policy[@]}" \
+  --predicate-type https://spdx.dev/Document/v2.3
 ```
 
-Use the same commands with either Go image name. Multi-platform image support
-would require per-platform SBOM attestations; the current extraction rejects it.
+Use the same commands with either Go image name. Older releases are not
+retroactively re-attested; releases from the previous CDS-only workflow use
+`build-cds-containers.yml` as their signer and attach the SBOM to the root digest.
+The shared workflow supports multiple platforms, but this change does not make
+the CDS Dockerfiles multi-platform.
 
 ### Making an update
 

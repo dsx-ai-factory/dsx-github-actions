@@ -24,6 +24,10 @@ on:
     paths:
       - 'cds-containers/**'
       - '.github/workflows/build-cds-containers.yml'
+      - '.github/actions/docker-build/**'
+      - '.github/workflows/attest-image.yml'
+      - '.github/scripts/prepare-image-attestation.sh'
+      - '.github/scripts/promote-attested-image.sh'
       - '.github/scripts/check_cds_tags.py'
   workflow_dispatch:
 
@@ -129,19 +133,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
-        with:
-          buildkitd-config: /etc/buildkit/buildkitd.toml
-
-      - name: Log in to GitHub Container Registry
-        if: needs.get-version.outputs.publish == 'true'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
@@ -157,17 +148,21 @@ jobs:
 
       - name: Build image for testing
         id: build
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
+        uses: ./.github/actions/docker-build
         with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_PREFIX }}${{ matrix.image.name }}
           context: ./cds-containers
-          file: ${{ matrix.image.path }}/Dockerfile
-          push: ${{ needs.get-version.outputs.publish == 'true' }}
-          load: ${{ needs.get-version.outputs.publish != 'true' }}
-          sbom: ${{ needs.get-version.outputs.publish == 'true' }}
+          dockerfile: ${{ matrix.image.path }}/Dockerfile
+          platforms: linux/amd64
+          push: ${{ needs.get-version.outputs.publish }}
+          load: ${{ needs.get-version.outputs.publish != 'true' && 'true' || 'false' }}
+          prepare-attestation: ${{ needs.get-version.outputs.publish }}
+          security-scan-enabled: "false"
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Select the exact built image
         id: test-image
@@ -226,88 +221,77 @@ jobs:
             uv --version
           '
 
-      - name: Record tested digest
+      - name: Record tested digest and evidence ID
         if: needs.get-version.outputs.publish == 'true'
         env:
           IMAGE_NAME: ${{ matrix.image.name }}
           DIGEST: ${{ steps.build.outputs.digest }}
+          SBOM_ARTIFACT_ID: ${{ steps.build.outputs.sbom-artifact-id }}
         run: |
+          [[ "$SBOM_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
           mkdir -p digests
-          printf '%s\n' "$DIGEST" > "digests/$IMAGE_NAME"
+          jq -n --arg image "$REGISTRY/$IMAGE_NAMESPACE/$IMAGE_PREFIX$IMAGE_NAME" \
+            --arg digest "$DIGEST" --arg sbom_artifact_id "$SBOM_ARTIFACT_ID" \
+            '{image: $image, digest: $digest, sbom_artifact_id: $sbom_artifact_id}' \
+            > "digests/$IMAGE_NAME.json"
 
       - name: Upload tested digest
         if: needs.get-version.outputs.publish == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cds-digest-${{ matrix.image.name }}
-          path: digests/${{ matrix.image.name }}
+          path: digests/${{ matrix.image.name }}.json
           if-no-files-found: error
           retention-days: 1
           overwrite: true
 
-  attest-images:
+  prepare-attestations:
     runs-on: linux-amd64-cpu4
-    timeout-minutes: 10
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    needs: [get-version, build-and-test-images]
+    if: needs.get-version.outputs.publish == 'true'
+    outputs:
+      matrix: ${{ steps.subjects.outputs.matrix }}
+    steps:
+      - name: Download tested image metadata
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: cds-digest-*
+          path: digests
+          merge-multiple: true
+
+      - name: Prepare the shared attestation matrix
+        id: subjects
+        run: |
+          matrix="$(jq -sc '{include: .}' digests/tools.json \
+            digests/go-dev-1.24-alpine.json digests/go-dev-1.24-debian.json)"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  attest-images:
+    needs: prepare-attestations
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare-attestations.outputs.matrix) }}
+    uses: ./.github/workflows/attest-image.yml
     permissions:
       contents: read
       packages: write
       id-token: write
       attestations: write
-    needs: [get-version, build-and-test-images]
-    if: needs.get-version.outputs.publish == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        image: [tools, go-dev-1.24-alpine, go-dev-1.24-debian]
-    steps:
-      - name: Download tested digest
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: cds-digest-${{ matrix.image }}
-          path: digests
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
-        with:
-          buildkitd-config: /etc/buildkit/buildkitd.toml
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract SBOM from the tested image
-        id: subject
-        env:
-          IMAGE_NAME: ${{ matrix.image }}
-        run: |
-          image="$REGISTRY/$IMAGE_NAMESPACE/$IMAGE_PREFIX$IMAGE_NAME"
-          digest="$(cat "digests/$IMAGE_NAME")"
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          # CDS images are single-platform; reject missing or multi-platform SBOMs.
-          docker buildx imagetools inspect "$image@$digest" --format '{{json .SBOM}}' |
-            jq -e '.SPDX | select(.spdxVersion and .SPDXID == "SPDXRef-DOCUMENT")' > sbom.spdx.json
-          echo "name=$image" >> "$GITHUB_OUTPUT"
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-
-      - name: Attest build provenance
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-name: ${{ steps.subject.outputs.name }}
-          subject-digest: ${{ steps.subject.outputs.digest }}
-          push-to-registry: true
-          create-storage-record: false
-
-      - name: Attest SBOM
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-name: ${{ steps.subject.outputs.name }}
-          subject-digest: ${{ steps.subject.outputs.digest }}
-          sbom-path: sbom.spdx.json
-          push-to-registry: true
-          create-storage-record: false
+    with:
+      image: ${{ matrix.image }}
+      digest: ${{ matrix.digest }}
+      platforms: linux/amd64
+      sbom_artifact_id: ${{ matrix.sbom_artifact_id }}
+      registry: ghcr.io
+      runner: linux-amd64-cpu4
+      # Keep promotion behind CDS's all-images and immutable-tag gates below.
+      tags: ""
+    secrets:
+      REGISTRY_USERNAME: ${{ github.actor }}
+      REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
 
   publish-images:
     runs-on: linux-amd64-cpu4
@@ -346,7 +330,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           for name in tools go-dev-1.24-alpine go-dev-1.24-debian; do
-            digest="$(cat "digests/$name")"
+            digest="$(jq -er '.digest' "digests/$name.json")"
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
             python3 .github/scripts/check_cds_tags.py \
               "$REGISTRY/$IMAGE_NAMESPACE/$IMAGE_PREFIX$name" "$digest" "$VERSION" "sha-$GITHUB_SHA" \
@@ -362,19 +346,17 @@ jobs:
           current_version="$(git show FETCH_HEAD:cds-containers/VERSION | tr -d '[:space:]')"
           for name in tools go-dev-1.24-alpine go-dev-1.24-debian; do
             image="$REGISTRY/$IMAGE_NAMESPACE/$IMAGE_PREFIX$name"
-            digest="$(cat "digests/$name")"
-            tags=()
+            digest="$(jq -er '.digest' "digests/$name.json")"
             published_tags=()
             while IFS= read -r tag; do
-              tags+=(--tag "$image:$tag")
-              published_tags+=("$tag")
+              published_tags+=("$image:$tag")
             done < "digests/missing-$name"
             if [[ "$VERSION" == "$current_version" ]]; then
-              tags+=(--tag "$image:latest")
-              published_tags+=("latest")
+              published_tags+=("$image:latest")
             fi
-            if (( ${#tags[@]} > 0 )); then
-              docker buildx imagetools create --prefer-index=false "${tags[@]}" "$image@$digest"
+            if (( ${#published_tags[@]} > 0 )); then
+              IMAGE="$image" EXPECTED_DIGEST="$digest" IMAGE_TAGS="$(printf '%s\n' "${published_tags[@]}")" \
+                bash .github/scripts/promote-attested-image.sh
               echo "Published $image tags: ${published_tags[*]} ($digest)"
             else
               echo "Skipped $image; immutable tags already point to $digest"
