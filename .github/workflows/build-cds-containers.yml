@@ -163,6 +163,7 @@ jobs:
           file: ${{ matrix.image.path }}/Dockerfile
           push: ${{ needs.get-version.outputs.publish == 'true' }}
           load: ${{ needs.get-version.outputs.publish != 'true' }}
+          sbom: ${{ needs.get-version.outputs.publish == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -244,13 +245,77 @@ jobs:
           retention-days: 1
           overwrite: true
 
+  attest-images:
+    runs-on: linux-amd64-cpu4
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    needs: [get-version, build-and-test-images]
+    if: needs.get-version.outputs.publish == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [tools, go-dev-1.24-alpine, go-dev-1.24-debian]
+    steps:
+      - name: Download tested digest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cds-digest-${{ matrix.image }}
+          path: digests
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          buildkitd-config: /etc/buildkit/buildkitd.toml
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract SBOM from the tested image
+        id: subject
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+        run: |
+          image="$REGISTRY/$IMAGE_NAMESPACE/$IMAGE_PREFIX$IMAGE_NAME"
+          digest="$(cat "digests/$IMAGE_NAME")"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          # CDS images are single-platform; reject missing or multi-platform SBOMs.
+          docker buildx imagetools inspect "$image@$digest" --format '{{json .SBOM}}' |
+            jq -e '.SPDX | select(.spdxVersion and .SPDXID == "SPDXRef-DOCUMENT")' > sbom.spdx.json
+          echo "name=$image" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.subject.outputs.name }}
+          subject-digest: ${{ steps.subject.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.subject.outputs.name }}
+          subject-digest: ${{ steps.subject.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
   publish-images:
     runs-on: linux-amd64-cpu4
     timeout-minutes: 10
     permissions:
       contents: read
       packages: write
-    needs: [get-version, build-and-test-images]
+    needs: [get-version, build-and-test-images, attest-images]
     if: needs.get-version.outputs.publish == 'true'
     steps:
       - name: Checkout code
@@ -321,7 +386,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-    needs: [get-version, build-and-test-images, publish-images]
+    needs: [get-version, build-and-test-images, attest-images, publish-images]
     if: always()
 
     steps:
@@ -330,6 +395,7 @@ jobs:
           VERSION: ${{ needs.get-version.outputs.version }}
           VERSION_RESULT: ${{ needs.get-version.result }}
           BUILD_RESULT: ${{ needs.build-and-test-images.result }}
+          ATTEST_RESULT: ${{ needs.attest-images.result }}
           PUBLISH_RESULT: ${{ needs.publish-images.result }}
           PUBLISH: ${{ needs.get-version.outputs.publish }}
         run: |
@@ -339,6 +405,7 @@ jobs:
             echo "Commit: $GITHUB_SHA"
             echo "Version validation: $VERSION_RESULT"
             echo "Build and smoke tests: $BUILD_RESULT"
+            echo "Attestations: $ATTEST_RESULT"
             echo "Publication: $PUBLISH_RESULT"
           } >> "$GITHUB_STEP_SUMMARY"
           if [[ "$VERSION_RESULT" != "success" || "$BUILD_RESULT" != "success" ||

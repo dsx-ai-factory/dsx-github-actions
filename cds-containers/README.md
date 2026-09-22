@@ -171,8 +171,11 @@ Pushes to `main` and copy-pr-bot branches (`pull-request/**`) build and smoke-te
 all three images. Mirror branches and manual runs test locally loaded images
 without publishing. Only a push to `main` that changes `VERSION` publishes.
 
-For publishing runs, the workflow first pushes unique staging tags and tests their
-exact digests. After all images pass, it checks that every version and SHA tag is
+For publishing runs, Buildx generates an SPDX SBOM alongside each image. The
+workflow pushes unique staging tags and tests their exact digests. After all
+images pass, it signs build provenance and the existing SBOM for each tested
+digest, storing the attestations in GitHub and GHCR. All three images must pass
+attestation before it checks that every version and SHA tag is
 either unused or already points to that image's tested digest, then creates only
 the missing release tags. Authentication, network, and unexpected registry errors
 stop publication. Only an explicit `MANIFEST_UNKNOWN` response permits a new tag.
@@ -184,6 +187,30 @@ fails, use **Re-run failed jobs** while the tested-digest artifacts are availabl
 (retained for one day). The publication job reuses those digests, skips matching
 version/SHA tags, and creates the missing tags. Rebuilding can produce different
 digests; conflicting published tags still require a new `VERSION`.
+
+### Verifying provenance and SBOMs
+
+Attestations apply to new version releases after this workflow change; existing
+images are not retroactively attested. CDS images currently contain one runtime
+platform, so both attestations identify the same published image index digest.
+Replace `<digest>` below with the digest you intend to use. Authenticate `gh` and
+Docker with access to the repository and package before verifying:
+
+```bash
+image='oci://ghcr.io/dsx-ai-factory/dsx-cds-tools@sha256:<digest>'
+for predicate in https://slsa.dev/provenance/v1 https://spdx.dev/Document/v2.3; do
+  gh attestation verify "$image" \
+    --repo dsx-ai-factory/dsx-github-actions \
+    --signer-workflow dsx-ai-factory/dsx-github-actions/.github/workflows/build-cds-containers.yml \
+    --source-ref refs/heads/main \
+    --predicate-type "$predicate" || exit 1
+done
+```
+
+Use the same commands with either Go image name. Multi-platform image support
+would require per-platform SBOM attestations; the current extraction rejects it.
+
+### Making an update
 
 When you need to update tools or fix issues:
 
