@@ -93,6 +93,10 @@ inputs:
     description: "If true, fail the action when Critical vulnerabilities are found during security scan."
     required: false
     default: "true"
+  prepare-attestation:
+    description: "Generate per-platform SBOMs independently of scanning. With push=true, publish only a run-unique candidate for the attest-image workflow, not the requested release tags."
+    required: false
+    default: "false"
 
 outputs:
   digest:
@@ -101,6 +105,12 @@ outputs:
   tags:
     description: "Normalized fully qualified image refs used for build/push"
     value: ${{ steps.normalize.outputs.tags }}
+  sbom-artifact-id:
+    description: "Workflow artifact ID containing platform digests and SBOMs"
+    value: ${{ steps.reports.outputs.artifact-id }}
+  candidate:
+    description: "Run-unique candidate reference when prepare-attestation is enabled"
+    value: ${{ steps.scan_vars.outputs.candidate }}
 
 runs:
   using: "composite"
@@ -129,16 +139,37 @@ runs:
       with:
         buildkitd-config: ${{ inputs.buildkit-config }}
 
-    - name: Prepare security scan paths
-      if: inputs.security-scan-enabled == 'true'
+    - name: Prepare OCI evidence paths
+      if: inputs.security-scan-enabled == 'true' || inputs.prepare-attestation == 'true'
       id: scan_vars
       shell: bash
+      env:
+        PREPARE_ATTESTATION: ${{ inputs.prepare-attestation }}
+        IMAGE: ${{ inputs.image }}
+        IMAGE_TAGS: ${{ steps.normalize.outputs.tags }}
       run: |
         set -euo pipefail
         scan_dir="$(mktemp -d "${RUNNER_TEMP}/docker-build-scan.XXXXXX")"
-        echo "layout=${scan_dir}/candidate" >> "$GITHUB_OUTPUT"
-        echo "reports=${scan_dir}/reports" >> "$GITHUB_OUTPUT"
-        echo "artifact_name=docker-build-scan-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${scan_dir##*.}" >> "$GITHUB_OUTPUT"
+        {
+          echo "layout=${scan_dir}/candidate"
+          echo "reports=${scan_dir}/reports"
+          echo "artifact_name=docker-build-scan-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${scan_dir##*.}"
+        } >> "$GITHUB_OUTPUT"
+        if [[ "$PREPARE_ATTESTATION" == true ]]; then
+          # Evidence and release aliases must stay in the same image repository.
+          [[ "$IMAGE" =~ ^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9._/-]+$ ]] || {
+            echo '::error::Attestation requires a fully qualified, tag-free image repository'
+            exit 1
+          }
+          while IFS= read -r tag; do
+            suffix="${tag#"$IMAGE:"}"
+            [[ "$tag" == "$IMAGE:"* && "$suffix" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]] || {
+              echo '::error::Attested release tags must belong to the input image repository'
+              exit 1
+            }
+          done <<< "$IMAGE_TAGS"
+          echo "candidate=$IMAGE:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${scan_dir##*.}" >> "$GITHUB_OUTPUT"
+        fi
 
     - name: Login to registry
       if: inputs.push == 'true' && inputs.username != '' && inputs.password != ''
@@ -155,10 +186,10 @@ runs:
         context: ${{ inputs.context }}
         file: ${{ inputs.dockerfile }}
         platforms: ${{ inputs.platforms }}
-        push: ${{ inputs.security-scan-enabled != 'true' && inputs.push == 'true' }}
-        # Scanned builds export once; publication copies this OCI layout after
-        # every requested platform passes. The no-scan path retains direct push.
-        outputs: ${{ inputs.security-scan-enabled == 'true' && format('type=oci,dest={0},tar=false', steps.scan_vars.outputs.layout) || '' }}
+        push: ${{ inputs.security-scan-enabled != 'true' && inputs.prepare-attestation != 'true' && inputs.push == 'true' }}
+        # Evidence-enabled builds export once; publication copies this layout.
+        # Without scanning or attestation preparation, retain direct Buildx push.
+        outputs: ${{ (inputs.security-scan-enabled == 'true' || inputs.prepare-attestation == 'true') && format('type=oci,dest={0},tar=false', steps.scan_vars.outputs.layout) || '' }}
         tags: ${{ steps.normalize.outputs.tags }}
         labels: ${{ inputs.labels }}
         build-args: ${{ inputs.build-args }}
@@ -168,30 +199,42 @@ runs:
         cache-from: ${{ steps.normalize.outputs.cache-from }}
         cache-to: ${{ steps.normalize.outputs.cache-to }}
 
+    - name: Generate platform SBOMs
+      if: inputs.security-scan-enabled == 'true' || inputs.prepare-attestation == 'true'
+      shell: bash
+      env:
+        OCI_LAYOUT: ${{ steps.scan_vars.outputs.layout }}
+        EXPECTED_DIGEST: ${{ steps.build.outputs.digest }}
+        PLATFORMS: ${{ inputs.platforms }}
+        REPORTS: ${{ steps.scan_vars.outputs.reports }}
+        # Tool image pins live here, alongside the action version pins.
+        SYFT_IMAGE: anchore/syft:v1.52.0@sha256:500e2d872ac019436926e8322b4fc1f39441d94d21f6f4046c6ff29b30e8cb02
+      run: |
+        bash "$GITHUB_ACTION_PATH/scripts/sbom-oci.sh"
+
     - name: Scan all platforms
       id: scan
       if: inputs.security-scan-enabled == 'true'
       shell: bash
       env:
-        SCAN_LAYOUT: ${{ steps.scan_vars.outputs.layout }}
         SCAN_DIGEST: ${{ steps.build.outputs.digest }}
-        SCAN_PLATFORMS: ${{ inputs.platforms }}
         SCAN_REPORTS: ${{ steps.scan_vars.outputs.reports }}
         SCAN_FAIL_ON_CRITICAL: ${{ inputs.security-scan-fail-on-critical }}
-        # Tool image pins live here, alongside the action version pins.
-        SYFT_IMAGE: anchore/syft:v1.52.0@sha256:500e2d872ac019436926e8322b4fc1f39441d94d21f6f4046c6ff29b30e8cb02
         GRYPE_IMAGE: anchore/grype:v0.117.0@sha256:ddf9e9f204049f3a4a0955ef70873cabab6a31432125ad4f20a490b54950a253
       run: |
         bash "$GITHUB_ACTION_PATH/scripts/scan-oci.sh"
 
-    - name: Publish scanned artifact
-      if: inputs.security-scan-enabled == 'true' && inputs.push == 'true' && steps.scan.outcome == 'success'
+    - name: Publish OCI artifact
+      if: >-
+        (inputs.security-scan-enabled == 'true' || inputs.prepare-attestation == 'true') &&
+        inputs.push == 'true' &&
+        (inputs.security-scan-enabled != 'true' || steps.scan.outcome == 'success')
       shell: bash
       env:
         OCI_LAYOUT: ${{ steps.scan_vars.outputs.layout }}
         EXPECTED_DIGEST: ${{ steps.build.outputs.digest }}
         REPORTS: ${{ steps.scan_vars.outputs.reports }}
-        IMAGE_TAGS: ${{ steps.normalize.outputs.tags }}
+        IMAGE_TAGS: ${{ inputs.prepare-attestation == 'true' && steps.scan_vars.outputs.candidate || steps.normalize.outputs.tags }}
         SKOPEO_IMAGE: quay.io/skopeo/stable:v1.22.2-immutable@sha256:4a16d57b37617a04b3d643079a477a2848efe892dffcdf0ce56df4262b65f810
       run: |
         set -euo pipefail
@@ -209,13 +252,14 @@ runs:
           bash "$GITHUB_ACTION_PATH/scripts/prepare-registry-auth.sh" "$tag" "$publish_tmp/auth.json"
           "${container[@]}" "$SKOPEO_IMAGE" "${skopeo_args[@]}" "oci:/candidate" "docker://$tag"
           if [[ "$(< "$REPORTS/published.digest")" != "$EXPECTED_DIGEST" ]]; then
-            echo "::error::Published digest differs from scanned digest"
+            echo "::error::Published digest differs from built digest"
             exit 1
           fi
         done <<< "$IMAGE_TAGS"
 
-    - name: Upload platform scan reports
-      if: ${{ always() && inputs.security-scan-enabled == 'true' && steps.scan_vars.outputs.reports != '' }}
+    - name: Upload platform evidence
+      id: reports
+      if: ${{ always() && (inputs.security-scan-enabled == 'true' || inputs.prepare-attestation == 'true') && steps.scan_vars.outputs.reports != '' }}
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: ${{ steps.scan_vars.outputs.artifact_name }}

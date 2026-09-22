@@ -101,6 +101,11 @@ on:
         required: false
         default: true
         type: boolean
+      prepare_attestation:
+        description: "Generate SBOMs independently of scanning; push only a candidate for the separate attest-image workflow"
+        required: false
+        default: false
+        type: boolean
     secrets:
       REGISTRY_USERNAME:
         description: "Registry username (optional; required only for push+login)"
@@ -115,6 +120,12 @@ on:
       tags:
         description: "Normalized fully qualified image refs used for build/push"
         value: ${{ jobs.build.outputs.tags }}
+      sbom_artifact_id:
+        description: "Artifact ID containing per-platform SBOMs and digest mapping"
+        value: ${{ jobs.build.outputs.sbom_artifact_id }}
+      candidate:
+        description: "Run-unique candidate reference (prepare_attestation only)"
+        value: ${{ jobs.build.outputs.candidate }}
 
 jobs:
   build:
@@ -125,6 +136,8 @@ jobs:
     outputs:
       digest: ${{ steps.docker.outputs.digest }}
       tags: ${{ steps.docker.outputs.tags }}
+      sbom_artifact_id: ${{ steps.docker.outputs.sbom-artifact-id }}
+      candidate: ${{ steps.docker.outputs.candidate }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -168,3 +181,4 @@ jobs:
           sbom: ${{ inputs.sbom }}
           security-scan-enabled: ${{ inputs.security_scan_enabled && 'true' || 'false' }}
           security-scan-fail-on-critical: ${{ inputs.security_scan_fail_on_critical && 'true' || 'false' }}
+          prepare-attestation: ${{ inputs.prepare_attestation && 'true' || 'false' }}
