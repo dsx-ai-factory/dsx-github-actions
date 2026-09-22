@@ -223,7 +223,7 @@ jobs:
 
 ### Security scan options
 
-- `security_scan_enabled`: If true, performs a pre-build security scan on a locally-built `linux/amd64` image before the main build/push.
+- `security_scan_enabled`: If true, builds one local OCI artifact for all requested Linux platforms, scans each platform with Syft/Grype, and publishes that same artifact only when the scan policy passes and `push` is true.
 - `security_scan_fail_on_critical`: If true, fails the workflow when Critical vulnerabilities are found. Scan tool failures always fail and prevent pushing.
 
 ## Release Workflow (`release.yml`)

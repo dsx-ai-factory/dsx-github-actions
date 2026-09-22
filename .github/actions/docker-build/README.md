@@ -80,7 +80,7 @@ steps:
 | `buildkit-config` | BuildKit config path, or empty for Docker defaults | No | `/etc/buildkit/buildkitd.toml` |
 | `provenance` | Provenance setting (empty uses docker default) | No | `""` |
 | `sbom` | SBOM setting (empty uses docker default) | No | `""` |
-| `security-scan-enabled` | If `true`, run SBOM+Grype scan on a locally-built `linux/amd64` image before main build/push | No | `false` |
+| `security-scan-enabled` | If `true`, build once to OCI, scan every requested Linux platform, then optionally publish the same digest | No | `false` |
 | `security-scan-fail-on-critical` | If `true`, fail when Critical vulnerabilities are found | No | `true` |
 
 ## Outputs
@@ -93,4 +93,9 @@ steps:
 ## Notes
 
 - If `push: "true"` but `username/password` are not provided, this action assumes you have already logged in earlier in the job.
-- When `security-scan-enabled: "true"`, this action builds a temporary local `linux/amd64` image to scan, then proceeds to the main (possibly multi-arch) build/push if the scan policy allows.
+- Scanned publication resolves Docker `credHelpers` / `credsStore` on the host (or reads inline credentials). Only the destination registry's credentials are passed to Skopeo through a temporary `0600` authfile, which is removed on exit; host credential helpers must be available in `PATH`.
+- When `security-scan-enabled: "true"`, Buildx exports all requested platforms once to `$RUNNER_TEMP/docker-build-scan.XXXXXX/candidate` (an OCI layout, not the Docker daemon or a registry). Allow enough runner disk space for all platforms and scanner extraction.
+- The **Scan all platforms** step runs `scripts/scan-oci.sh`: Syft reads each platform from that layout and Grype scans its SBOM. These tools inspect files; they do not execute the target image. Reports and SPDX SBOMs for each platform are uploaded as a workflow artifact, including on scan failure.
+- The separate **Publish scanned artifact** step runs only when scanning succeeds and `push: "true"`. Skopeo copies the original index, images, and attestations to each requested tag with `--all --preserve-digests`; there is no second build. `push: "false"` performs the same scans without publication. Disabling scanning retains the existing direct Buildx push path.
+- Setting `security-scan-fail-on-critical: "false"` permits Critical findings, but scanner errors, missing platforms, and digest mismatches still fail the action and prevent publication.
+- The scan path requires a Linux runner with Bash, jq, and Docker. Syft, Grype, and Skopeo run in digest-pinned containers configured in `action.yml`; no Python or host installation of these tools is needed. The bundled script is resolved through `$GITHUB_ACTION_PATH`, so callers do not need it in their own checkout.
