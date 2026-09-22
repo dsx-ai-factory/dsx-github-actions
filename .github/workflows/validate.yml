@@ -32,6 +32,9 @@ jobs:
       - name: Test CDS release tag guard
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
 
+      - name: Test image evidence and publication gates
+        run: node --test .github/scripts/tests/image-attestation.test.cjs
+
       - name: Resolve release candidate with default settings
         id: default-rc
         uses: ./.github/actions/resolve-release-candidate

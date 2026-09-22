@@ -1,0 +1,198 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Attest and promote image
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: "Fully qualified image repository, without a tag or digest"
+        required: true
+        type: string
+      digest:
+        description: "Exact root digest output by docker-build"
+        required: true
+        type: string
+      platforms:
+        description: "Same platform list passed to docker-build"
+        required: true
+        type: string
+      sbom_artifact_id:
+        description: "Same-run artifact ID output by docker-build with prepare-attestation enabled"
+        required: true
+        type: string
+      tags:
+        description: "Normalized release refs from docker-build; empty signs/verifies without promoting tags"
+        required: false
+        default: ""
+        type: string
+      registry:
+        description: "Registry host used for login (e.g. ghcr.io)"
+        required: true
+        type: string
+      runner:
+        description: "Linux runner with Docker, Bash, jq and a gh CLI supporting --bundle-from-oci"
+        required: false
+        default: ubuntu-latest
+        type: string
+    secrets:
+      REGISTRY_USERNAME:
+        required: true
+      REGISTRY_PASSWORD:
+        required: true
+
+jobs:
+  prepare:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      matrix: ${{ steps.subjects.outputs.matrix }}
+    steps:
+      - name: Validate workflow identity and evidence ID
+        env:
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          ARTIFACT_ID: ${{ inputs.sbom_artifact_id }}
+        run: |
+          [[ "$WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ && -n "$WORKFLOW_REPOSITORY" ]]
+          # An empty ID would download every artifact; require exactly one.
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+
+      - name: Checkout shared scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: dsx-github-actions
+          persist-credentials: false
+
+      - name: Download platform evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ inputs.sbom_artifact_id }}
+          path: evidence
+          merge-multiple: true
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Login to registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Validate every platform before signing
+        id: subjects
+        env:
+          IMAGE: ${{ inputs.image }}
+          EXPECTED_DIGEST: ${{ inputs.digest }}
+          PLATFORMS: ${{ inputs.platforms }}
+          REPORTS: evidence
+        run: bash dsx-github-actions/.github/scripts/prepare-image-attestation.sh
+
+  attest:
+    needs: prepare
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Download platform evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ inputs.sbom_artifact_id }}
+          path: evidence
+          merge-multiple: true
+
+      - name: Login to registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ inputs.image }}
+          subject-digest: ${{ matrix.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest platform SBOM
+        if: matrix.sbom != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ inputs.image }}
+          subject-digest: ${{ matrix.digest }}
+          sbom-path: evidence/${{ matrix.sbom }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Verify signed evidence from the registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ inputs.image }}
+          DIGEST: ${{ matrix.digest }}
+          SBOM: ${{ matrix.sbom }}
+          SIGNER_REPO: ${{ job.workflow_repository }}
+          SIGNER_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          policy=(--repo "$GITHUB_REPOSITORY" --source-ref "$GITHUB_REF" --source-digest "$GITHUB_SHA"
+            --signer-workflow "$SIGNER_REPO/.github/workflows/attest-image.yml" --signer-digest "$SIGNER_SHA"
+            --bundle-from-oci)
+          gh attestation verify "oci://$IMAGE@$DIGEST" "${policy[@]}" \
+            --predicate-type https://slsa.dev/provenance/v1
+          if [[ -n "$SBOM" ]]; then
+            gh attestation verify "oci://$IMAGE@$DIGEST" "${policy[@]}" \
+              --predicate-type https://spdx.dev/Document/v2.3 --format json > verified-sbom.json
+            jq -e --slurpfile expected "evidence/$SBOM" \
+              'any(.[]; .verificationResult.statement.predicate == $expected[0])' verified-sbom.json >/dev/null
+          fi
+
+  promote:
+    needs: [prepare, attest]
+    if: inputs.tags != '' && needs.attest.result == 'success'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout shared scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: dsx-github-actions
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Login to registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Promote the verified digest without rebuilding
+        env:
+          IMAGE: ${{ inputs.image }}
+          EXPECTED_DIGEST: ${{ inputs.digest }}
+          IMAGE_TAGS: ${{ inputs.tags }}
+        run: bash dsx-github-actions/.github/scripts/promote-attested-image.sh

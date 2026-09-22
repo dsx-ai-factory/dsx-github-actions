@@ -28,6 +28,7 @@ A collection of reusable GitHub Actions for standardizing CI/CD workflows across
 | ------------------------------------------------------------------------ | ----------------------------------------------------- | --------------------------------------- |
 | [promote-image](.github/workflows/promote-image.yml) | Re-tag and re-publish multi-arch images via `skopeo` | Promote OCI images across registries |
 | [docker-build](.github/workflows/docker-build.yml) | Reusable workflow wrapper for Docker build/push | Share Docker build logic across repos |
+| [attest-image](.github/workflows/attest-image.yml) | Sign and verify platform SBOMs and build provenance | Promote verified image digests to release tags |
 | [release-candidate-publish](.github/workflows/release-candidate-publish.yml) | Source RCs plus immutable NGC images and Helm charts | Manifest-driven RC publishing through one caller job |
 | [release-candidate](.github/workflows/release-candidate.yml) | Protected-branch source RC tags and GitHub prereleases | Source-only RC publishing without registry credentials |
 
