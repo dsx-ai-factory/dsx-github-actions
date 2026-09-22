@@ -198,7 +198,7 @@ Docker with access to the repository and package before verifying:
 
 ```bash
 image='oci://ghcr.io/dsx-ai-factory/dsx-cds-tools@sha256:<digest>'
-for predicate in https://slsa.dev/provenance/v1 https://spdx.dev/Document; do
+for predicate in https://slsa.dev/provenance/v1 https://spdx.dev/Document/v2.3; do
   gh attestation verify "$image" \
     --repo dsx-ai-factory/dsx-github-actions \
     --signer-workflow dsx-ai-factory/dsx-github-actions/.github/workflows/build-cds-containers.yml \
