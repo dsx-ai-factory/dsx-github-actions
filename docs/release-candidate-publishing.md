@@ -75,14 +75,17 @@ Only a push to a protected, current `release/X.Y.Z` head can pass the source pub
 
 ### Inputs
 
-The wrapper accepts these string inputs.
+The wrapper accepts these inputs. All are strings except the two booleans noted below.
 
 | Input | Default | Meaning |
 | --- | --- | --- |
 | `runner` | Required, no default | Approved Linux runner for preflight and publishing. |
+| `buildkit-config` | `/etc/buildkit/buildkitd.toml` | Runner's BuildKit config. Set to `""` to use Docker defaults on GitHub-hosted runners. |
 | `default-branch` | Caller repository's default branch | Separate stable-history branch used for version calculation. |
 | `images` | `[]` | JSON array of image declarations. |
 | `charts` | `[]` | JSON array of chart declarations. |
+| `submodules` | `false` | Boolean. Recursively check out product submodules in preflight and artifact jobs. |
+| `validate-artifacts` | `false` | Boolean. Build images and lint/package charts on nonrelease events, without publishing. |
 | `environment` | Required | GitHub environment used by artifact jobs. |
 | `ngc-path` | Required | NGC organization/team path, without `nvcr.io/`. |
 
@@ -90,6 +93,15 @@ Each artifact array defaults to empty, but the wrapper requires at least one ima
 An empty array disables that artifact type.
 Use the [source-only workflow](#source-only-workflow) when neither artifact type is needed.
 Image platforms are fixed to `linux/amd64,linux/arm64`; the wrapper has no platform input.
+
+With `validate-artifacts: true`, nonrelease events run the declared image and chart matrices after shared checks and preflight pass.
+Images use the same Docker action, contexts, targets, arguments, and platforms as publishing, with `push: false` and remote caching disabled.
+Charts use the same preparation and packaging actions, with NGC push disabled.
+Both use the synthetic version `0.0.0-rc.1` and the event commit SHA.
+These jobs have no publishing environment, registry login, or publishing secrets, and do not create Git tags.
+Dependencies and base images must be readable without publishing credentials.
+Enable this only on approved runners and trusted PR or copy-pr-bot events, since Dockerfiles execute product code.
+Successful validation proves builds and packages work on that runner, not NGC access, artifact publication, or product runtime behavior.
 
 ## Manifest Contract
 
@@ -127,8 +139,8 @@ The chart manifest has this shape.
 The declarations must satisfy these conditions.
 
 - Each manifest contains at most 32 entries, with valid, unique names within that artifact type.
-- Image objects contain only `name`, `context`, and `dockerfile`.
-- Chart objects contain `name`, `path`, and optional `localDependencies`.
+- Image objects contain `name`, `context`, and `dockerfile`, with optional `target` and `buildArgs`.
+- Chart objects contain `name`, `path`, and optional `localDependencies`, `versionValuePaths`, and `lintValues`.
 - Context and chart paths resolve to directories; Dockerfile paths resolve to files.
 - Manifest paths cannot be absolute, contain `..` components, or resolve outside the source checkout.
 - Each chart name matches its `Chart.yaml`.
@@ -140,6 +152,39 @@ The shared helper updates that local chart's `version` and `appVersion`, plus it
 It does not infer Exchange-specific dependencies or change external dependency version declarations.
 These edits affect only the publishing workspace, not committed product files.
 
+### Docker Targets and Arguments
+
+Use a Docker stage name and a mapping of literal build arguments when the Dockerfile requires them.
+
+```json
+{"name":"widget","context":".","dockerfile":"Dockerfile","target":"widget-runtime","buildArgs":{"BINARY":"widget"}}
+```
+
+Omitting `target` uses the Dockerfile's final stage. Omitting `buildArgs` passes no additional arguments.
+Argument names must be identifiers and values must be single-line strings without surrounding whitespace.
+The mapping supports at most 32 arguments, with values up to 4096 characters each.
+Arguments are passed as data, without shell evaluation or release-version substitution.
+Do not put credentials in build arguments or manifests. Build arguments can appear in build logs and image provenance.
+The Dockerfile must produce its own generated sources and build prerequisites; the wrapper does not run product Make targets or arbitrary setup scripts.
+
+### Chart Values
+
+Declare existing string values in the chart's `values.yaml` that must track the RC version.
+Paths are arrays of literal mapping keys, not yq expressions.
+
+```json
+{"name":"widget","path":"charts/widget","versionValuePaths":[["widget","widget-server","image","tag"]],"lintValues":{"endpoint":"https://example.invalid"}}
+```
+
+`versionValuePaths` defaults to `[]`. Each of at most 32 paths contains one to 16 keys using letters, digits, underscores, or hyphens.
+Preflight rejects missing paths, non-string leaves, duplicate paths, and malformed declarations before source tagging.
+Preparation stamps only the declared values, in addition to the existing chart metadata updates.
+
+`lintValues` is an optional JSON mapping, limited to 65536 characters, for non-secret validation configuration.
+Helm receives it through a temporary values file only during lint.
+It does not change packaged chart defaults, and it is not a deployment configuration.
+Product tests remain responsible for checking that packaged charts select the intended images.
+
 ## Prerequisites and Scope
 
 Configure these prerequisites before enabling RC publication.
@@ -150,7 +195,8 @@ Configure these prerequisites before enabling RC publication.
 - Restrict the selected GitHub environment to approved protected release branches. Configure any required environment approvals.
 - Store `NGC_DSX_COMPONENTS_PUSH_KEY` in that environment, scoped to the selected NGC destination.
 - Set `runner` explicitly to an approved Linux runner with Git, Bash, `gh`, and `jq`. The source publisher requires non-cone sparse checkout support. Shared jobs install Node, Helm, and `yq` as needed.
-- When images are declared, the runner must have Docker and a readable `/etc/buildkit/buildkitd.toml`, as required by the shared `docker-build` action. Preflight fails before source tag creation if either prerequisite is missing.
+- When images are declared, the runner must have Docker and the selected `buildkit-config` file. Preflight fails before source tag creation if either is missing. On GitHub-hosted runners, set `buildkit-config: ""` to use Docker defaults instead.
+- Set `submodules: true` when build contexts depend on submodules. Checkout uses the pinned gitlinks recursively, not submodule branch tips. Submodules must be accessible using checkout read access; the release Deploy Key and NGC credentials are not passed to submodule checkout.
 - Keep stable and RC publishing triggers disjoint. A release-worthy change and compatible stable history are required; a branch name alone does not force a release.
 
 ### NGC Credentials
@@ -333,6 +379,7 @@ The shared verifier uses bounded retries for chart visibility in NGC and fails o
 ## Verify Your First RC
 
 Before merging, confirm copy-pr-bot validation passed shared tests and product manifest preflight without publishing.
+For build and packaging evidence, enable `validate-artifacts` and require its image and chart jobs on the intended Linux runner.
 Local validation is not evidence of a real RC publication or rerun.
 
 After an approved release-worthy change reaches the protected release branch, complete these checks.

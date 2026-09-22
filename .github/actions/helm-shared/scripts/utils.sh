@@ -196,6 +196,18 @@ helm_lint() {
   if [[ "${CC_HELM_LINT:-}" == "true" ]]; then
     log_info "Linting ${CC_HELM_CHART_PATH:-.}..."
 
+    local values_file="" status=0
+    local values_args=()
+    if [[ -n "${CC_HELM_LINT_VALUES:-}" ]]; then
+      if ! printf '%s' "$CC_HELM_LINT_VALUES" | jq -e 'type == "object"' >/dev/null 2>&1; then
+        log_error "lint-values must be a JSON mapping."
+        return 1
+      fi
+      values_file=$(mktemp)
+      printf '%s' "$CC_HELM_LINT_VALUES" > "$values_file"
+      values_args=(--values "$values_file")
+    fi
+
     local set_args=""
     if echo "${CC_HELM_VALUE_OVERRIDES:-}" | jq -e 'length > 0' >/dev/null 2>&1; then
       log_info "Building value overrides..."
@@ -205,7 +217,11 @@ helm_lint() {
 
     # disable SC2086 because we want word splitting for set_args
     # shellcheck disable=SC2086
-    helm lint "${CC_HELM_CHART_PATH:-.}" $set_args
+    helm lint "${CC_HELM_CHART_PATH:-.}" "${values_args[@]}" $set_args || status=$?
+    if [[ -n "$values_file" ]]; then
+      rm -f "$values_file"
+    fi
+    return "$status"
   fi
 }
 

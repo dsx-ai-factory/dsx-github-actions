@@ -8,7 +8,12 @@ const { execFileSync } = require('node:child_process');
 const namePattern = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
 
 function array(value, label) {
-  const entries = JSON.parse(value || '[]');
+  let entries;
+  try {
+    entries = JSON.parse(value || '[]');
+  } catch {
+    throw new Error(`${label} must be valid JSON`);
+  }
   if (!Array.isArray(entries) || entries.length > 32) {
     throw new Error(`${label} must be an array with at most 32 entries`);
   }
@@ -50,21 +55,48 @@ function uniqueNames(entries, label) {
   }
 }
 
+function imageOptions(image) {
+  const options = {};
+  if (image.target !== undefined) {
+    if (typeof image.target !== 'string' || image.target.length > 128 ||
+        /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.exec(image.target)?.[0] !== image.target) {
+      throw new Error('Image target must be a Docker stage name');
+    }
+    options.target = image.target;
+  }
+  if (image.buildArgs !== undefined) {
+    const args = image.buildArgs;
+    if (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length > 32) {
+      throw new Error('Image buildArgs must be a mapping with at most 32 entries');
+    }
+    options.buildArgs = Object.entries(args).map(([key, value]) => {
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.exec(key)?.[0] !== key || key.length > 128 ||
+          typeof value !== 'string' || value.length > 4096 || /[\x00-\x1f\x7f]/.test(value) ||
+          value.trim() !== value) {
+        throw new Error('Image buildArgs require argument names and single-line string values without surrounding whitespace');
+      }
+      return `${key}=${value}`;
+    }).join('\n');
+  }
+  return options;
+}
+
 function plan(env = process.env, root = fs.realpathSync(process.cwd())) {
   const namespace = env.RC_NGC_PATH || '';
   if (!/^[a-z0-9][a-z0-9_-]*\/[a-z0-9][a-z0-9_-]*$/.test(namespace)) {
     throw new Error('ngc-path must be an organization/team path');
   }
   const images = array(env.RC_IMAGES, 'images').map(image => {
-    object(image, ['name', 'context', 'dockerfile'], 'image');
+    object(image, ['name', 'context', 'dockerfile', 'target', 'buildArgs'], 'image');
     return {
       name: image.name,
       context: sourcePath(image.context, true, root),
       dockerfile: sourcePath(image.dockerfile, false, root),
+      ...imageOptions(image),
     };
   });
   const charts = array(env.RC_CHARTS, 'charts').map(chart => {
-    object(chart, ['name', 'path', 'localDependencies'], 'chart');
+    object(chart, ['name', 'path', 'localDependencies', 'versionValuePaths', 'lintValues'], 'chart');
     const dependencies = chart.localDependencies ?? [];
     if (!Array.isArray(dependencies) || dependencies.length > 32) {
       throw new Error('localDependencies must be an array with at most 32 entries');
@@ -74,17 +106,25 @@ function plan(env = process.env, root = fs.realpathSync(process.cwd())) {
       return { name: dependency.name, path: sourcePath(dependency.path, true, root) };
     });
     uniqueNames(localDependencies, 'Local dependency');
-    return { name: chart.name, path: sourcePath(chart.path, true, root), localDependencies };
+    return {
+      name: chart.name, path: sourcePath(chart.path, true, root), localDependencies,
+      ...(chart.versionValuePaths === undefined ? {} : { versionValuePaths: chart.versionValuePaths }),
+      ...(chart.lintValues === undefined ? {} : { lintValues: chart.lintValues }),
+    };
   });
   uniqueNames(images, 'Image');
   uniqueNames(charts, 'Chart');
   if (images.length + charts.length === 0) throw new Error('Declare at least one image or chart');
   for (const chart of charts) {
-    execFileSync(process.execPath, [path.join(__dirname, 'prepare-chart.cjs'), '--validate-only'], {
-      cwd: root,
-      env: { ...process.env, RC_CHART: JSON.stringify(chart) },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    try {
+      execFileSync(process.execPath, [path.join(__dirname, 'prepare-chart.cjs'), '--validate-only'], {
+        cwd: root,
+        env: { ...process.env, RC_CHART: JSON.stringify(chart) },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch {
+      throw new Error('Chart declaration failed validation; check chart metadata, dependencies, versionValuePaths, and lintValues');
+    }
   }
   return { images, charts };
 }

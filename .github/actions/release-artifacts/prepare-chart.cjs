@@ -43,6 +43,25 @@ function main() {
   if (!object(config) || !chartName(config.name)) fail('RC_CHART requires a valid chart name');
   const localDependencies = config.localDependencies === undefined ? [] : config.localDependencies;
   if (!Array.isArray(localDependencies)) fail('localDependencies must be an array');
+  if (config.lintValues !== undefined &&
+      (!object(config.lintValues) || JSON.stringify(config.lintValues).length > 65536)) {
+    fail('lintValues must be a mapping of at most 65536 characters');
+  }
+  const versionValuePaths = config.versionValuePaths === undefined ? [] : config.versionValuePaths;
+  if (!Array.isArray(versionValuePaths) || versionValuePaths.length > 32) {
+    fail('versionValuePaths must be an array with at most 32 entries');
+  }
+  const valuePaths = new Set();
+  for (const keys of versionValuePaths) {
+    if (!Array.isArray(keys) || keys.length === 0 || keys.length > 16 ||
+        keys.some(key => typeof key !== 'string' || key.length > 128 ||
+          /^[A-Za-z0-9_][A-Za-z0-9_-]*$/.exec(key)?.[0] !== key)) {
+      fail('Each versionValuePaths entry must be an array of literal mapping keys');
+    }
+    const expression = `.${keys.map(key => `[${JSON.stringify(key)}]`).join('')}`;
+    if (valuePaths.has(expression)) fail('versionValuePaths contains a duplicate path');
+    valuePaths.add(expression);
+  }
 
   const checkout = fs.realpathSync(process.cwd());
   function inside(candidate) {
@@ -128,6 +147,27 @@ function main() {
 
   const rootPath = resolveInside(config.path, checkout, 'RC_CHART.path', true);
   const root = readChart(rootPath, config.name);
+  let valuesFile;
+  if (versionValuePaths.length) {
+    valuesFile = resolveInside('values.yaml', root.directory, 'values.yaml');
+    if (!fs.statSync(valuesFile).isFile()) fail('values.yaml must be a regular file');
+    let values;
+    try {
+      values = JSON.parse(run('yq', ['eval', '-o=json', '.', valuesFile]));
+    } catch {
+      fail('values.yaml must be one valid YAML document readable by yq');
+    }
+    for (const keys of versionValuePaths) {
+      let value = values;
+      for (const key of keys) {
+        if (!object(value) || !Object.hasOwn(value, key)) {
+          fail('versionValuePaths must reference existing string values');
+        }
+        value = value[key];
+      }
+      if (typeof value !== 'string') fail('versionValuePaths must reference existing string values');
+    }
+  }
   const alignments = [];
   const names = new Set();
   const directories = new Set([root.directory]);
@@ -166,6 +206,10 @@ function main() {
     ...alignments.map(({ index }) => `.dependencies[${index}].version = strenv(RELEASE_VERSION)`),
   ].join(' | ');
   run('yq', ['eval', '-i', stampRoot, root.file]);
+  if (valuesFile) {
+    const stampValues = [...valuePaths].map(expression => `${expression} = strenv(RELEASE_VERSION)`).join(' | ');
+    run('yq', ['eval', '-i', stampValues, valuesFile]);
+  }
   if (root.dependencies.length) {
     run('helm', ['dependency', 'update', '.'], { cwd: root.directory });
   }

@@ -77,6 +77,7 @@ steps:
 | `build-args` | Build args (one per line, `KEY=VALUE`) | No | `""` |
 | `labels` | OCI labels (one per line, `key=value`) | No | `""` |
 | `target` | Target stage | No | `""` |
+| `buildkit-config` | BuildKit config path, or empty for Docker defaults | No | `/etc/buildkit/buildkitd.toml` |
 | `provenance` | Provenance setting (empty uses docker default) | No | `""` |
 | `sbom` | SBOM setting (empty uses docker default) | No | `""` |
 | `security-scan-enabled` | If `true`, run SBOM+Grype scan on a locally-built `linux/amd64` image before main build/push | No | `false` |

@@ -32,6 +32,10 @@ inputs:
     description: "Whether to lint the Helm Chart"
     required: false
     default: "false"
+  lint-values:
+    description: "JSON mapping used only for Helm lint, never merged into the packaged chart"
+    required: false
+    default: "{}"
   app-version:
     description: "Set the appVersion of the Helm Chart"
     required: false
@@ -116,6 +120,7 @@ runs:
       env:
         CC_HELM_CHART_PATH: ${{ inputs.chart-path }}
         CC_HELM_LINT: ${{ inputs.lint }}
+        CC_HELM_LINT_VALUES: ${{ inputs.lint-values }}
       run: |
         UTILS_PATH="${{ github.action_path }}/../helm-shared/scripts/utils.sh"
         "$UTILS_PATH" helm_extra_repos_add
