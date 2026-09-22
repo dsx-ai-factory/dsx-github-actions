@@ -73,6 +73,10 @@ inputs:
     description: "Build target stage"
     required: false
     default: ""
+  buildkit-config:
+    description: "BuildKit configuration path, or empty for Docker defaults"
+    required: false
+    default: "/etc/buildkit/buildkitd.toml"
   provenance:
     description: "Generate provenance (e.g. false, true, mode=max). Empty uses docker/build-push-action default."
     required: false
@@ -123,7 +127,7 @@ runs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       with:
-        buildkitd-config: /etc/buildkit/buildkitd.toml
+        buildkitd-config: ${{ inputs.buildkit-config }}
 
     - name: Prepare security scan vars
       if: inputs.security-scan-enabled == 'true'

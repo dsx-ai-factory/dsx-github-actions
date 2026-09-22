@@ -10,6 +10,10 @@ on:
         description: Approved Linux runner with Docker and the shared BuildKit configuration for image publishing
         type: string
         required: true
+      buildkit-config:
+        description: BuildKit configuration path, or empty for Docker defaults
+        type: string
+        default: /etc/buildkit/buildkitd.toml
       default-branch:
         description: Stable history branch, defaults to the repository default branch
         type: string
@@ -105,10 +109,12 @@ jobs:
         run: node ../dsx-release-tools/.github/actions/release-artifacts/plan.cjs
       - name: Check image build prerequisites before creating a source tag
         if: steps.plan.outputs.image-count != '0'
+        env:
+          BUILDKIT_CONFIG: ${{ inputs.buildkit-config }}
         run: |
           docker info >/dev/null
-          if [[ ! -r /etc/buildkit/buildkitd.toml ]]; then
-            echo "::error::The image runner must provide /etc/buildkit/buildkitd.toml for the shared Docker builder."
+          if [[ -n "$BUILDKIT_CONFIG" && ! -r "$BUILDKIT_CONFIG" ]]; then
+            echo "::error::The image runner must provide the selected BuildKit configuration."
             exit 1
           fi
 
@@ -151,6 +157,7 @@ jobs:
           build-args: ${{ matrix.buildArgs || '' }}
           platforms: linux/amd64,linux/arm64
           push: "false"
+          buildkit-config: ${{ inputs.buildkit-config }}
           cache: "false"
           labels: |
             org.opencontainers.image.created=${{ steps.metadata.outputs.created }}
@@ -290,6 +297,7 @@ jobs:
           build-args: ${{ matrix.buildArgs || '' }}
           platforms: linux/amd64,linux/arm64
           push: "true"
+          buildkit-config: ${{ inputs.buildkit-config }}
           registry: nvcr.io
           username: $oauthtoken
           password: ${{ secrets.NGC_DSX_COMPONENTS_PUSH_KEY }}

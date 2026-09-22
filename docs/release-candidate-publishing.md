@@ -80,6 +80,7 @@ The wrapper accepts these inputs. All are strings except the two booleans noted 
 | Input | Default | Meaning |
 | --- | --- | --- |
 | `runner` | Required, no default | Approved Linux runner for preflight and publishing. |
+| `buildkit-config` | `/etc/buildkit/buildkitd.toml` | Runner's BuildKit config. Set to `""` to use Docker defaults on GitHub-hosted runners. |
 | `default-branch` | Caller repository's default branch | Separate stable-history branch used for version calculation. |
 | `images` | `[]` | JSON array of image declarations. |
 | `charts` | `[]` | JSON array of chart declarations. |
@@ -194,7 +195,7 @@ Configure these prerequisites before enabling RC publication.
 - Restrict the selected GitHub environment to approved protected release branches. Configure any required environment approvals.
 - Store `NGC_DSX_COMPONENTS_PUSH_KEY` in that environment, scoped to the selected NGC destination.
 - Set `runner` explicitly to an approved Linux runner with Git, Bash, `gh`, and `jq`. The source publisher requires non-cone sparse checkout support. Shared jobs install Node, Helm, and `yq` as needed.
-- When images are declared, the runner must have Docker and a readable `/etc/buildkit/buildkitd.toml`, as required by the shared `docker-build` action. Preflight fails before source tag creation if either prerequisite is missing.
+- When images are declared, the runner must have Docker and the selected `buildkit-config` file. Preflight fails before source tag creation if either is missing. On GitHub-hosted runners, set `buildkit-config: ""` to use Docker defaults instead.
 - Set `submodules: true` when build contexts depend on submodules. Checkout uses the pinned gitlinks recursively, not submodule branch tips. Submodules must be accessible using checkout read access; the release Deploy Key and NGC credentials are not passed to submodule checkout.
 - Keep stable and RC publishing triggers disjoint. A release-worthy change and compatible stable history are required; a branch name alone does not force a release.
 
