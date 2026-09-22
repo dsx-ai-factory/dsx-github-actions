@@ -225,6 +225,119 @@ test('chart preparation with actual Mike Farah yq', { skip: !yq && 'Mike Farah y
     assert.deepEqual(f.events(), []);
   });
 
+  await t.test('stamps declared nested values, preserving unrelated values and comments', (t) => {
+    const f = fixture(t);
+    const file = f.write(`${f.config.path}/values.yaml`,
+      '# Keep this comment.\nwidget:\n  widget-server:\n    image:\n      tag: old\n      repository: example/widget\nother: unchanged\n');
+    f.config.versionValuePaths = [['widget', 'widget-server', 'image', 'tag']];
+    f.config.lintValues = { endpoint: 'https://example.invalid', enabled: false };
+    const before = snapshot(f.source);
+    success(f.prepare({ validateOnly: true }));
+    assert.deepEqual(snapshot(f.source), before);
+    success(f.prepare());
+    const values = () => JSON.parse(f.run(yq, ['eval', '-o=json', '.', file]).stdout);
+    assert.deepEqual(values(), {
+      widget: { 'widget-server': { image: { tag: version, repository: 'example/widget' } } },
+      other: 'unchanged',
+    });
+    assert.match(fs.readFileSync(file, 'utf8'), /# Keep this comment\./);
+    success(f.prepare());
+    assert.equal(values().widget['widget-server'].image.tag, version);
+  });
+
+  const invalidValues = [
+    ['null paths', { versionValuePaths: null }],
+    ['nonarray paths', { versionValuePaths: '.widget.image.tag' }],
+    ['too many paths', { versionValuePaths: Array(33).fill(['widget', 'image', 'tag']) }],
+    ['string path', { versionValuePaths: ['.widget.image.tag'] }],
+    ['empty path', { versionValuePaths: [[]] }],
+    ['numeric key', { versionValuePaths: [['widget', 0]] }],
+    ['expression key', { versionValuePaths: [['widget | env(SECRET)']] }],
+    ['newline key', { versionValuePaths: [['widget\n']] }],
+    ['duplicate path', { versionValuePaths: [['widget', 'image', 'tag'], ['widget', 'image', 'tag']] }],
+    ['missing leaf', { versionValuePaths: [['widget', 'image', 'typo']] }],
+    ['missing parent', { versionValuePaths: [['missing', 'image', 'tag']] }],
+    ['object leaf', { versionValuePaths: [['widget', 'image']] }],
+    ['numeric leaf', { versionValuePaths: [['replicas']] }],
+    ['null lint values', { lintValues: null }],
+    ['array lint values', { lintValues: [] }],
+    ['string lint values', { lintValues: 'endpoint=example' }],
+    ['oversized lint values', { lintValues: { endpoint: 'x'.repeat(65536) } }],
+  ];
+  for (const [name, options] of invalidValues) {
+    await t.test(`rejects ${name} in preflight and preparation without writes`, (t) => {
+      const f = fixture(t);
+      f.write(`${f.config.path}/values.yaml`, 'widget:\n  image:\n    tag: old\nreplicas: 2\n');
+      const chartConfig = { ...f.config, ...options };
+      const before = snapshot(f.source);
+      failure(f.prepare({ chartConfig, validateOnly: true }), /versionValuePaths|lintValues/);
+      failure(f.prepare({ chartConfig }), /versionValuePaths|lintValues/);
+      const output = path.join(f.root, 'output');
+      failure(f.run(process.execPath, [path.resolve(__dirname, '../plan.cjs')], {
+        RC_CHARTS: JSON.stringify([{ ...chartConfig, path: '.' }]),
+        RC_NGC_PATH: 'example/components-dev', GITHUB_OUTPUT: output,
+      }, path.join(f.source, f.config.path)), /Chart declaration failed validation/);
+      assert.equal(fs.existsSync(output), false);
+      assert.deepEqual(snapshot(f.source), before);
+      assert.deepEqual(f.events(), []);
+    });
+  }
+
+  await t.test('plans valid chart overrides without changing source values', (t) => {
+    const f = fixture(t);
+    const chart = { name: f.config.name, path: '.',
+      versionValuePaths: [['image', 'tag']], lintValues: { endpoint: 'https://example.invalid' } };
+    f.write(`${f.config.path}/values.yaml`, 'image:\n  tag: old\n');
+    const before = snapshot(f.source);
+    const output = path.join(f.root, 'output');
+    success(f.run(process.execPath, [path.resolve(__dirname, '../plan.cjs')], {
+      RC_CHARTS: JSON.stringify([chart]), RC_NGC_PATH: 'example/components-dev', GITHUB_OUTPUT: output,
+    }, path.join(f.source, f.config.path)));
+    const line = fs.readFileSync(output, 'utf8').split('\n').find(value => value.startsWith('charts='));
+    assert.deepEqual(JSON.parse(line.slice('charts='.length)), [{ ...chart, localDependencies: [] }]);
+    assert.deepEqual(snapshot(f.source), before);
+  });
+
+  await t.test('real Helm lint uses temporary values without changing the packaged defaults', {
+    skip: !helm && 'Helm v3 is not installed',
+  }, (t) => {
+    const f = fixture(t);
+    f.useRealHelm();
+    f.write(`${f.config.path}/values.yaml`, 'endpoint: ""\nimage:\n  tag: old\n');
+    f.write(`${f.config.path}/values.schema.json`, JSON.stringify({ type: 'object', properties: {
+      endpoint: { type: 'string', minLength: 1 },
+    } }));
+    f.config.versionValuePaths = [['image', 'tag']];
+    success(f.prepare());
+    const lint = lintValues => f.run('bash', [path.resolve(__dirname, '../../helm-shared/scripts/utils.sh'), 'helm_lint'], {
+      CC_HELM_CHART_PATH: f.config.path, CC_HELM_LINT: 'true', CC_HELM_LINT_VALUES: lintValues,
+    });
+    const before = snapshot(f.source);
+    failure(lint('{}'));
+    assert.deepEqual(fs.readdirSync(f.temporary), []);
+    success(lint(JSON.stringify({ endpoint: 'https://example.invalid', image: { tag: 'lint-only' } })));
+    assert.deepEqual(fs.readdirSync(f.temporary), []);
+    for (const invalid of ['[]', 'null', '"fake-secret-never-log"', '{fake-secret-never-log']) {
+      const result = lint(invalid);
+      failure(result);
+      assert.match(result.stdout + result.stderr, /JSON mapping/);
+      assert.deepEqual(fs.readdirSync(f.temporary), []);
+    }
+    assert.deepEqual(snapshot(f.source), before);
+    success(f.run('bash', [path.resolve(__dirname, '../../helm-shared/scripts/utils.sh'), 'helm_package'], {
+      CC_HELM_CHART_PATH: f.config.path, CC_HELM_CHART_VERSION: version, CC_HELM_CHART_APP_VERSION: version,
+      CC_HELM_PACKAGE_DIR: f.root,
+    }));
+    const archive = path.join(f.root, `${f.config.name}-${version}.tgz`);
+    const shown = f.run(helm, ['show', 'values', archive]);
+    success(shown);
+    const file = path.join(f.root, 'packaged-values.yaml');
+    fs.writeFileSync(file, shown.stdout);
+    const parsed = f.run(yq, ['eval', '-o=json', '.', file]);
+    success(parsed);
+    assert.deepEqual(JSON.parse(parsed.stdout), { endpoint: '', image: { tag: version } });
+  });
+
   await t.test('supports root checkout charts, empty dependencies, and absent annotations', (t) => {
     const f = fixture(t);
     f.config = { name: 'example.service_v2', path: '.' };

@@ -15,13 +15,21 @@ on:
         type: string
         default: ""
       images:
-        description: JSON array of image name, context, and dockerfile objects
+        description: JSON array of image name, context, dockerfile, and optional target and buildArgs objects
         type: string
         default: "[]"
       charts:
-        description: JSON array of chart name, path, and optional localDependencies objects
+        description: JSON array of chart name, path, and optional localDependencies, versionValuePaths, and lintValues objects
         type: string
         default: "[]"
+      submodules:
+        description: Recursively check out product submodules using checkout read access
+        type: boolean
+        default: false
+      validate-artifacts:
+        description: Build images and lint/package charts without publishing on nonrelease events
+        type: boolean
+        default: false
       environment:
         description: Protected GitHub environment for artifact credentials and deployment rules
         type: string
@@ -72,6 +80,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: release-source
+          submodules: ${{ inputs.submodules && 'recursive' || false }}
           persist-credentials: false
       - name: Require the reusable workflow revision
         if: job.workflow_sha == ''
@@ -102,6 +111,99 @@ jobs:
             echo "::error::The image runner must provide /etc/buildkit/buildkitd.toml for the shared Docker builder."
             exit 1
           fi
+
+  validate-images:
+    name: Validate image (${{ matrix.name }})
+    needs: [checks, plan]
+    if: inputs.validate-artifacts && needs.plan.outputs.image-count != '0' && (github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/release/'))
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.images) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: release-source
+          submodules: ${{ inputs.submodules && 'recursive' || false }}
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: dsx-release-tools
+          persist-credentials: false
+      - name: Check source revision and image metadata
+        id: metadata
+        working-directory: release-source
+        run: |
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          echo "created=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Build both image platforms without publishing
+        uses: ./dsx-release-tools/.github/actions/docker-build
+        with:
+          image: nvcr.io/${{ inputs.ngc-path }}/${{ matrix.name }}
+          tags: 0.0.0-rc.1
+          context: release-source/${{ matrix.context }}
+          dockerfile: release-source/${{ matrix.dockerfile }}
+          target: ${{ matrix.target || '' }}
+          build-args: ${{ matrix.buildArgs || '' }}
+          platforms: linux/amd64,linux/arm64
+          push: "false"
+          cache: "false"
+          labels: |
+            org.opencontainers.image.created=${{ steps.metadata.outputs.created }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=0.0.0-rc.1
+
+  validate-charts:
+    name: Validate chart (${{ matrix.name }})
+    needs: [checks, plan]
+    if: inputs.validate-artifacts && needs.plan.outputs.chart-count != '0' && (github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/release/'))
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.charts) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: release-source
+          submodules: ${{ inputs.submodules && 'recursive' || false }}
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: dsx-release-tools
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - uses: dcarbone/install-yq-action@64b1b9eb28920bb1a4c13c05321df284f9a8f940 # v1.1.1
+      - name: Install Helm
+        run: bash dsx-release-tools/.github/actions/helm-shared/scripts/install-helm.sh
+      - name: Prepare chart metadata and local dependencies
+        working-directory: release-source
+        env:
+          RC_CHART: ${{ toJSON(matrix) }}
+          RELEASE_VERSION: 0.0.0-rc.1
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          node ../dsx-release-tools/.github/actions/release-artifacts/prepare-chart.cjs
+      - name: Lint and package the chart without publishing
+        uses: ./dsx-release-tools/.github/actions/helm-package-push
+        with:
+          chart-path: release-source/${{ matrix.path }}
+          chart-version: 0.0.0-rc.1
+          app-version: 0.0.0-rc.1
+          lint: "true"
+          lint-values: ${{ toJSON(matrix.lintValues || fromJSON('{}')) }}
+          ngc-push: "false"
 
   release:
     needs: plan
@@ -139,6 +241,7 @@ jobs:
         with:
           ref: ${{ needs.release.outputs.tag }}
           path: release-source
+          submodules: ${{ inputs.submodules && 'recursive' || false }}
           persist-credentials: false
       - name: Require the reusable workflow revision
         if: job.workflow_sha == ''
@@ -183,6 +286,8 @@ jobs:
           tags: ${{ needs.release.outputs.version }}
           context: release-source/${{ matrix.context }}
           dockerfile: release-source/${{ matrix.dockerfile }}
+          target: ${{ matrix.target || '' }}
+          build-args: ${{ matrix.buildArgs || '' }}
           platforms: linux/amd64,linux/arm64
           push: "true"
           registry: nvcr.io
@@ -223,6 +328,7 @@ jobs:
         with:
           ref: ${{ needs.release.outputs.tag }}
           path: release-source
+          submodules: ${{ inputs.submodules && 'recursive' || false }}
           persist-credentials: false
       - name: Require the reusable workflow revision
         if: job.workflow_sha == ''
@@ -279,6 +385,7 @@ jobs:
           chart-version: ${{ needs.release.outputs.version }}
           app-version: ${{ needs.release.outputs.version }}
           lint: "true"
+          lint-values: ${{ toJSON(matrix.lintValues || fromJSON('{}')) }}
           ngc-key: ${{ secrets.NGC_DSX_COMPONENTS_PUSH_KEY }}
           ngc-path: ${{ inputs.ngc-path }}
           ngc-duplicate: skip

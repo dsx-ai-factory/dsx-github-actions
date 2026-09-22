@@ -29,6 +29,50 @@ test('plans a product image without chart dependencies', t => {
   assert.deepEqual(plan(inputs(), fixture(t)), { images: [image], charts: [] });
 });
 
+test('serializes literal Docker arguments and preserves the target without shell evaluation', t => {
+  const configured = { ...image, target: 'widget-runtime', buildArgs: {
+    BINARY: 'widget', FLAGS: '-X example=value -tags=a,b', EMPTY: '', LITERAL: '$(touch nope)',
+  } };
+  assert.deepEqual(plan(inputs({ RC_IMAGES: JSON.stringify([configured]) }), fixture(t)).images, [{
+    ...image, target: 'widget-runtime',
+    buildArgs: 'BINARY=widget\nFLAGS=-X example=value -tags=a,b\nEMPTY=\nLITERAL=$(touch nope)',
+  }]);
+  assert.deepEqual(plan(inputs({ RC_IMAGES: JSON.stringify([{ ...image, buildArgs: {} }]) }), fixture(t)).images,
+    [{ ...image, buildArgs: '' }]);
+});
+
+test('rejects invalid Docker options before emitting any workflow outputs', t => {
+  const root = fixture(t);
+  const output = path.join(root, 'output');
+  const invalid = [
+    { target: null }, { target: '' }, { target: false }, { target: 'widget\n' },
+    { target: '--push' }, { target: 'a'.repeat(129) }, { target: 'widget runtime' },
+    { buildArgs: null }, { buildArgs: [] }, { buildArgs: 'BINARY=widget' },
+    { buildArgs: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`ARG_${i}`, 'value'])) },
+    { buildArgs: { BINARY: false } }, { buildArgs: { BINARY: 1 } },
+    { buildArgs: { BINARY: ['widget'] } }, { buildArgs: { BINARY: null } },
+    { buildArgs: { 'BINARY\n': 'widget' } }, { buildArgs: { 'A=B': 'widget' } },
+    { buildArgs: { BINARY: 'widget\nINJECTED=1' } }, { buildArgs: { BINARY: 'widget\r' } },
+    { buildArgs: { BINARY: 'widget\0' } }, { buildArgs: { BINARY: ' widget' } },
+    { buildArgs: { BINARY: 'widget ' } }, { buildArgs: { BINARY: 'x'.repeat(4097) } },
+    { buildArgs: { BINARY: 'fake-secret-never-log\n' } },
+  ];
+  for (const options of invalid) {
+    const result = spawnSync(process.execPath, [path.resolve(__dirname, '../plan.cjs')], {
+      cwd: root, encoding: 'utf8',
+      env: { ...process.env, ...inputs({ RC_IMAGES: JSON.stringify([{ ...image, ...options }]) }), GITHUB_OUTPUT: output },
+    });
+    assert.equal(result.status, 1, JSON.stringify(options));
+    assert.equal(fs.existsSync(output), false);
+    assert.doesNotMatch(result.stdout + result.stderr, /fake-secret-never-log/);
+  }
+});
+
+test('rejects malformed JSON without logging input content', t => {
+  assert.throws(() => plan(inputs({ RC_IMAGES: '{"fake-secret-never-log"' }), fixture(t)),
+    { message: 'images must be valid JSON' });
+});
+
 test('rejects invalid declarations before producing a plan', t => {
   const root = fixture(t);
   for (const overrides of [
