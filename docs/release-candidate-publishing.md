@@ -201,6 +201,8 @@ Configure these prerequisites before enabling RC publication.
 
 ### NGC Credentials
 
+Image jobs authenticate to check existing versions, then build missing images with `anonymous-build: "true"`. An isolated Docker configuration excludes existing registry credentials and credential helpers from the build. The build exports both platforms to a local OCI layout. After the build, publication authenticates again with the push key, and Skopeo copies the layout without rebuilding or changing its digest. Public NGC base images are pulled anonymously. Private NGC base images are not supported by this release path.
+
 `NGC_DSX_COMPONENTS_PUSH_KEY` is optional in the reusable workflow's secret declaration.
 Artifact publishing still requires an available credential.
 In the recommended setup, each artifact job resolves the secret from the GitHub environment named by `environment`.

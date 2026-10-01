@@ -41,8 +41,12 @@ inputs:
     description: "Whether to push image to registry"
     required: false
     default: "false"
+  anonymous-build:
+    description: "Build without Docker registry credentials, then authenticate only for publication."
+    required: false
+    default: "false"
   load:
-    description: "Load a single-platform image into Docker for local tests. Requires scanning and attestation preparation to be disabled."
+    description: "Load a single-platform image into Docker for local tests. Requires scanning and attestation preparation to be disabled. Anonymous builds can load when push is false."
     required: false
     default: "false"
   registry:
@@ -123,10 +127,10 @@ runs:
   using: "composite"
   steps:
     - name: Validate local load settings
-      if: inputs.load == 'true' && (inputs.security-scan-enabled == 'true' || inputs.prepare-attestation == 'true')
+      if: inputs.load == 'true' && (inputs.security-scan-enabled == 'true' || inputs.prepare-attestation == 'true' || (inputs.anonymous-build == 'true' && inputs.push == 'true'))
       shell: bash
       run: |
-        echo '::error::Local load cannot be combined with OCI scanning or attestation preparation'
+        echo '::error::Local load cannot be combined with OCI scanning, attestation preparation, or anonymous publication'
         exit 1
 
     - name: Prepare scripts
@@ -153,8 +157,8 @@ runs:
       with:
         buildkitd-config: ${{ inputs.buildkit-config }}
 
-    - name: Prepare OCI evidence paths
-      if: inputs.security-scan-enabled == 'true' || inputs.prepare-attestation == 'true'
+    - name: Prepare OCI paths
+      if: inputs.security-scan-enabled == 'true' || inputs.prepare-attestation == 'true' || (inputs.anonymous-build == 'true' && inputs.push == 'true')
       id: scan_vars
       shell: bash
       env:
@@ -164,6 +168,7 @@ runs:
       run: |
         set -euo pipefail
         scan_dir="$(mktemp -d "${RUNNER_TEMP}/docker-build-scan.XXXXXX")"
+        mkdir "$scan_dir/reports"
         {
           echo "layout=${scan_dir}/candidate"
           echo "reports=${scan_dir}/reports"
@@ -186,25 +191,33 @@ runs:
         fi
 
     - name: Login to registry
-      if: inputs.push == 'true' && inputs.username != '' && inputs.password != ''
+      if: inputs.push == 'true' && inputs.anonymous-build != 'true' && inputs.username != '' && inputs.password != ''
       uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
       with:
         registry: ${{ inputs.registry }}
         username: ${{ inputs.username }}
         password: ${{ inputs.password }}
 
+    - name: Prepare build credentials
+      id: build_config
+      shell: bash
+      env:
+        ANONYMOUS_BUILD: ${{ inputs.anonymous-build }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/prepare-build-config.sh"
+
     - name: Build image
       id: build
+      env:
+        DOCKER_CONFIG: ${{ steps.build_config.outputs.config }}
       uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
       with:
         context: ${{ inputs.context }}
         file: ${{ inputs.dockerfile }}
         platforms: ${{ inputs.platforms }}
         load: ${{ inputs.load == 'true' }}
-        push: ${{ inputs.security-scan-enabled != 'true' && inputs.prepare-attestation != 'true' && inputs.push == 'true' }}
-        # Evidence-enabled builds export once; publication copies this layout.
-        # Without scanning or attestation preparation, retain direct Buildx push.
-        outputs: ${{ (inputs.security-scan-enabled == 'true' || inputs.prepare-attestation == 'true') && format('type=oci,dest={0},tar=false', steps.scan_vars.outputs.layout) || '' }}
+        push: ${{ inputs.security-scan-enabled != 'true' && inputs.prepare-attestation != 'true' && inputs.anonymous-build != 'true' && inputs.push == 'true' }}
+        # OCI publication copies this layout without rebuilding.
+        outputs: ${{ (inputs.security-scan-enabled == 'true' || inputs.prepare-attestation == 'true' || (inputs.anonymous-build == 'true' && inputs.push == 'true')) && format('type=oci,dest={0},tar=false', steps.scan_vars.outputs.layout) || '' }}
         tags: ${{ steps.normalize.outputs.tags }}
         labels: ${{ inputs.labels }}
         build-args: ${{ inputs.build-args }}
@@ -239,9 +252,17 @@ runs:
       run: |
         bash "$GITHUB_ACTION_PATH/scripts/scan-oci.sh"
 
+    - name: Login for OCI publication
+      if: inputs.push == 'true' && inputs.anonymous-build == 'true' && inputs.username != '' && inputs.password != ''
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
+
     - name: Publish OCI artifact
       if: >-
-        (inputs.security-scan-enabled == 'true' || inputs.prepare-attestation == 'true') &&
+        (inputs.security-scan-enabled == 'true' || inputs.prepare-attestation == 'true' || (inputs.anonymous-build == 'true' && inputs.push == 'true')) &&
         inputs.push == 'true' &&
         (inputs.security-scan-enabled != 'true' || steps.scan.outcome == 'success')
       shell: bash
@@ -253,6 +274,11 @@ runs:
         SKOPEO_IMAGE: quay.io/skopeo/stable:v1.22.2-immutable@sha256:4a16d57b37617a04b3d643079a477a2848efe892dffcdf0ce56df4262b65f810
       run: |
         set -euo pipefail
+        # Multiple tags can add duplicate layout descriptors for the same index.
+        jq -e --arg digest "$EXPECTED_DIGEST" \
+          '.manifests | length > 0 and all(.[]; .digest == $digest)' "$OCI_LAYOUT/index.json" >/dev/null
+        jq '.manifests = [.manifests[0]]' "$OCI_LAYOUT/index.json" > "$OCI_LAYOUT/index.publish.json"
+        mv "$OCI_LAYOUT/index.publish.json" "$OCI_LAYOUT/index.json"
         publish_tmp="$(mktemp -d "${RUNNER_TEMP}/docker-publish.XXXXXX")"
         trap 'rm -rf "$publish_tmp"' EXIT
         mkdir "$publish_tmp/scratch"
@@ -280,3 +306,10 @@ runs:
         name: ${{ steps.scan_vars.outputs.artifact_name }}
         path: ${{ steps.scan_vars.outputs.reports }}
         if-no-files-found: ignore
+
+    - name: Remove anonymous build configuration
+      if: always() && inputs.anonymous-build == 'true' && steps.build_config.outputs.config != ''
+      shell: bash
+      env:
+        BUILD_CONFIG: ${{ steps.build_config.outputs.config }}
+      run: rm -rf -- "$BUILD_CONFIG"

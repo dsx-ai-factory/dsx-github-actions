@@ -301,6 +301,7 @@ jobs:
           registry: nvcr.io
           username: $oauthtoken
           password: ${{ secrets.NGC_DSX_COMPONENTS_PUSH_KEY }}
+          anonymous-build: "true"
           cache-scope: rc-${{ matrix.name }}
           labels: |
             org.opencontainers.image.created=${{ steps.metadata.outputs.created }}
