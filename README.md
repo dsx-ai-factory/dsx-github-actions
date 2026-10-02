@@ -66,7 +66,8 @@ Preflight checks these prerequisites before creating an RC tag.
 
 Replace `REPLACE_WITH_REVIEWED_COMMIT_SHA` in the example with a reviewed
 commit containing the wrapper and shared helpers before use. Configure
-`NGC_DSX_COMPONENTS_PUSH_KEY` in the selected publishing environment. Validation
+`NGC_DSX_COMPONENTS_PUSH_KEY` in the selected publishing environment and set
+`secrets: inherit` on the caller job. Validation
 on copy-pr-bot pushes or `pull_request` events does not publish artifacts or
 use the publishing environment.
 

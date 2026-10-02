@@ -59,8 +59,7 @@ jobs:
          {"name":"nats-event-bus","path":"deploy/nats-event-bus",
           "localDependencies":[{"name":"auth-callout","path":"auth-callout/deploy"}]},
          {"name":"dsx-agent-gateway","path":"deploy/dsx-agent-gateway"}]
-    secrets:
-      release-deploy-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
+    secrets: inherit
 ```
 
 Replace `REPLACE_WITH_REVIEWED_COMMIT_SHA` with the full reviewed commit SHA containing the wrapper and its helpers before use.
@@ -206,10 +205,14 @@ Image jobs authenticate to check existing versions, then build missing images wi
 `NGC_DSX_COMPONENTS_PUSH_KEY` is optional in the reusable workflow's secret declaration.
 Artifact publishing still requires an available credential.
 In the recommended setup, each artifact job resolves the secret from the GitHub environment named by `environment`.
-The caller does not pass that environment secret through its `secrets` mapping.
+GitHub forwards environment secrets to a called workflow only when the caller passes them, so the caller job must set `secrets: inherit`.
+Without it, the artifact jobs fail at "Require the environment's NGC credential" even when the environment secret exists.
 
-A caller can explicitly pass a repository or organization secret with the same name when it does not use environment-scoped storage.
-That optional mapping does not bypass environment policy.
+`secrets: inherit` cannot be combined with an explicit `secrets` mapping.
+A caller that also supplies `release-deploy-key` must list both secrets explicitly, including `NGC_DSX_COMPONENTS_PUSH_KEY: ${{ secrets.NGC_DSX_COMPONENTS_PUSH_KEY }}`.
+GitHub documents that the environment secret is then used in the artifact jobs, which run with `environment` set.
+A caller can also store a repository or organization secret with the same name when it does not use environment-scoped storage.
+Neither option bypasses environment policy.
 The source publisher and validation jobs do not use the NGC credential.
 Never commit a credential value or print it during troubleshooting.
 
@@ -217,7 +220,8 @@ Never commit a credential value or print it during troubleshooting.
 
 Some repositories, including Exchange, permit release-tag writes only through an approved Deploy Key.
 `contents: write` on `GITHUB_TOKEN` does not override those tag rules.
-Pass the existing repository-scoped, write-enabled key as shown in the caller's `release-deploy-key` mapping.
+Pass the existing repository-scoped, write-enabled key through an explicit `release-deploy-key` mapping.
+Because `secrets: inherit` cannot be combined with an explicit mapping, also pass `NGC_DSX_COMPONENTS_PUSH_KEY` explicitly as described in [NGC Credentials](#ngc-credentials).
 
 The wrapper forwards this optional secret only to `release-candidate.yml`.
 The source checkout uses SSH and semantic-release receives `git@github.com:OWNER/REPO.git` for Git operations.
@@ -468,7 +472,7 @@ after stable promotion without deleting or moving its immutable release tags.
 | Source check rejects the run | Verify branch protection, exact `release/X.Y.Z` naming and that the run still targets the current remote branch head. |
 | Version-target check fails | Reconcile the intended branch target with release history and commit semantics. Do not bypass the check or move an existing tag. |
 | Tag/release creation denied | Check the release identity's permissions and tag rules. An NGC credential cannot grant GitHub tag permissions. |
-| Artifact job cannot use the environment/NGC | Check protected branch admission, environment approvals, scoped registry permissions and runner connectivity. Never print credentials. |
+| Artifact job cannot use the environment/NGC | Confirm the caller job sets `secrets: inherit` or passes `NGC_DSX_COMPONENTS_PUSH_KEY` explicitly. Then check protected branch admission, environment approvals, scoped registry permissions and runner connectivity. Never print credentials. |
 | Tag exists but some artifacts are missing | Repair the failed publishing prerequisite and rerun the same workflow run. Inspect each artifact independently; do not skip all uploads merely because the tag exists. |
 | Existing artifact has a different revision or a required platform is missing | Fail closed and investigate the publishing history. Do not overwrite the RC tag; have the release owner select the corrected release path. |
 | Multiple RC tags point to the same commit | The resolver deliberately rejects ambiguity. Have the release owner reconcile the release history instead of guessing which version to publish. |
