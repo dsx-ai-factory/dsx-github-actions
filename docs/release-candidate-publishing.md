@@ -65,6 +65,7 @@ jobs:
 Replace `REPLACE_WITH_REVIEWED_COMMIT_SHA` with the full reviewed commit SHA containing the wrapper and its helpers before use.
 The placeholder is not a usable ref.
 Replace the repository guard, runner, environment, NGC path, and manifests for another product.
+`secrets: inherit` forwards every secret the caller can access. Map `NGC_DSX_COMPONENTS_PUSH_KEY` explicitly instead when that scope is too broad, as described in [NGC Credentials](#ngc-credentials).
 Do not restrict the caller job to release pushes only, because that would skip manifest validation on copy-pr-bot pushes.
 
 The wrapper also supports validation on `pull_request` events when the caller enables that trigger.
@@ -205,12 +206,13 @@ Image jobs authenticate to check existing versions, then build missing images wi
 `NGC_DSX_COMPONENTS_PUSH_KEY` is optional in the reusable workflow's secret declaration.
 Artifact publishing still requires an available credential.
 In the recommended setup, each artifact job resolves the secret from the GitHub environment named by `environment`.
-GitHub forwards environment secrets to a called workflow only when the caller passes them, so the caller job must set `secrets: inherit`.
-Without it, the artifact jobs fail at "Require the environment's NGC credential" even when the environment secret exists.
+GitHub forwards environment secrets to a called workflow only when the caller passes them, so the caller job must set `secrets: inherit` or map `NGC_DSX_COMPONENTS_PUSH_KEY: ${{ secrets.NGC_DSX_COMPONENTS_PUSH_KEY }}` explicitly.
+Without either, the artifact jobs fail at "Require the environment's NGC credential" even when the environment secret exists.
+`inherit` forwards every secret the caller can access, while an explicit mapping limits the called workflow to the named secrets.
+GitHub documents that the environment secret is used in the artifact jobs, which run with `environment` set, whichever form the caller uses.
 
 `secrets: inherit` cannot be combined with an explicit `secrets` mapping.
-A caller that also supplies `release-deploy-key` must list both secrets explicitly, including `NGC_DSX_COMPONENTS_PUSH_KEY: ${{ secrets.NGC_DSX_COMPONENTS_PUSH_KEY }}`.
-GitHub documents that the environment secret is then used in the artifact jobs, which run with `environment` set.
+A caller that also supplies `release-deploy-key` must list both secrets explicitly.
 A caller can also store a repository or organization secret with the same name when it does not use environment-scoped storage.
 Neither option bypasses environment policy.
 The source publisher and validation jobs do not use the NGC credential.

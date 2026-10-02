@@ -48,10 +48,11 @@ The workflow declares these optional secrets.
 | `NGC_DSX_COMPONENTS_PUSH_KEY` | NGC credential resolved in each artifact job's selected environment. The caller must forward it with `secrets: inherit` or an explicit mapping. A repository or organization secret with the same name also works when environment-scoped storage is not used. |
 
 Configure `NGC_DSX_COMPONENTS_PUSH_KEY` in the selected GitHub environment for
-the recommended setup and set `secrets: inherit` on the caller job. GitHub
-forwards environment secrets to a called workflow only through `inherit` or an
-explicit mapping. Restrict the environment to approved protected release
-branches. The NGC secret is optional in `workflow_call`, but artifact publishing
+the recommended setup and forward it from the caller job. GitHub forwards
+environment secrets to a called workflow only through `secrets: inherit` or an
+explicit mapping. `inherit` forwards every secret the caller can access, so map
+`NGC_DSX_COMPONENTS_PUSH_KEY` explicitly when the caller holds unrelated
+secrets. Restrict the environment to approved protected release branches. The NGC secret is optional in `workflow_call`, but artifact publishing
 requires an available credential. Validation does not use publishing
 credentials or the publishing environment.
 
