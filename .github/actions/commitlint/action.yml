@@ -20,6 +20,10 @@ inputs:
     description: 'Path to commitlint config file. If empty, uses default discovery (commitlint.config.js, .commitlintrc.js, etc.)'
     required: false
     default: ''
+  pr-title:
+    description: 'Lint this pull request title instead of a commit range. When set, `from` and `to` are ignored.'
+    required: false
+    default: ''
   from:
     description: 'Lint commits starting from this ref (exclusive). Defaults to the base of the PR or the parent of HEAD.'
     required: false
@@ -70,10 +74,20 @@ runs:
         COMMITLINT_FROM: ${{ steps.range.outputs.from }}
         COMMITLINT_TO: ${{ inputs.to }}
         COMMITLINT_CONFIG: ${{ inputs.config-file }}
+        COMMITLINT_PR_TITLE: ${{ inputs.pr-title }}
       run: |
         CONFIG_FLAG=""
         if [ -n "$COMMITLINT_CONFIG" ]; then
           CONFIG_FLAG="--config $COMMITLINT_CONFIG"
+        fi
+
+        if [ -n "$COMMITLINT_PR_TITLE" ]; then
+          echo "Linting pull request title"
+          # commitlint reads stdin only when --edit, --env, --from and --to are
+          # all omitted, so this branch must not pass a range.
+          # shellcheck disable=SC2086
+          printf '%s\n' "$COMMITLINT_PR_TITLE" | npx commitlint $CONFIG_FLAG --verbose
+          exit 0
         fi
 
         FROM_FLAG=""
