@@ -22,19 +22,19 @@ jobs:
         run: |
           echo "::error::Reusable workflow SHA is unavailable"
           exit 1
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
       - name: Install shared release test dependencies
         run: npm ci --ignore-scripts --prefix .github/actions/release-candidate/tests
       - name: Test release contracts against local Git repositories
         run: npm test --prefix .github/actions/release-candidate/tests
-      - uses: dcarbone/install-yq-action@64b1b9eb28920bb1a4c13c05321df284f9a8f940 # v1.1.1
+      - uses: dcarbone/install-yq-action@4075b4dca348d74bd83f2bf82d30f25d7c54539b # v1.3.1
       - name: Install Helm for local chart packaging tests
         run: bash .github/actions/helm-shared/scripts/install-helm.sh
       - name: Test artifact planning, preparation, and verification
