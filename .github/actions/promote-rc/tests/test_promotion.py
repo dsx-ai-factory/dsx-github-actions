@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import base64
 import copy
 import io
 import json
@@ -773,6 +774,27 @@ class GateTests(unittest.TestCase):
 
 
 class ToolTests(unittest.TestCase):
+    def test_registry_authentication_writes_private_docker_credentials(self):
+        for capture_only in (True, False):
+            with self.subTest(capture_only=capture_only), tempfile.TemporaryDirectory() as directory:
+                env = {
+                    "PROMOTION_AUTH_ROOT": directory,
+                    "RC_PROMOTION_SOURCE_NGC_KEY": "source-test-key",
+                }
+                credentials = {"SOURCE": "source-test-key"}
+                if not capture_only:
+                    env["RC_PROMOTION_DESTINATION_NGC_KEY"] = "destination-test-key"
+                    credentials["DESTINATION"] = "destination-test-key"
+                with patch.dict(os.environ, env, clear=True), patch.object(p, "command"):
+                    p.authenticate_registries(config(), capture_only=capture_only)
+                    for label, key in credentials.items():
+                        path = Path(directory) / label.lower() / "config.json"
+                        self.assertEqual(os.environ[f"{label}_DOCKER_CONFIG"], str(path.parent))
+                        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                        self.assertEqual(json.loads(path.read_text()), {"auths": {"nvcr.io": {
+                            "auth": base64.b64encode(f"$oauthtoken:{key}".encode()).decode(),
+                        }}})
+
     def test_image_copy_preserves_all_manifests_from_the_verified_digest(self):
         env = {"SOURCE_DOCKER_CONFIG": "/tmp/source-auth",
                "DESTINATION_DOCKER_CONFIG": "/tmp/destination-auth"}

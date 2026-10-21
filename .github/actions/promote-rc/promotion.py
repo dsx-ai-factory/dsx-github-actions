@@ -631,7 +631,7 @@ def authenticate_registries(config, capture_only=False):
         auth = {"auths": {"nvcr.io": {
             "auth": base64.b64encode(f"$oauthtoken:{key}".encode()).decode(),
         }}}
-        with path.open("w", opener=lambda name, flags: os.open(name, flags, 0o600)) as output:
+        with open(path, "w", opener=lambda name, flags: os.open(name, flags, 0o600)) as output:
             json.dump(auth, output)
         os.environ[f"{label}_DOCKER_CONFIG"] = str(directory)
     if not capture_only:
