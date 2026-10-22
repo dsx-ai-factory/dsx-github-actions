@@ -1,0 +1,138 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: 'Helm Push'
+description: 'Package a Helm chart and push as OCI artifact to any container registry'
+
+inputs:
+  chart-path:
+    description: 'Path to the Helm chart directory'
+    required: true
+  chart-version:
+    description: 'Version to set on the chart (e.g., 1.5.0)'
+    required: true
+  registry:
+    description: 'OCI registry host for authentication (e.g., ghcr.io, nvcr.io)'
+    required: true
+  registry-path:
+    description: 'Full OCI path without oci:// prefix (e.g., ghcr.io/nvidia/helm-charts)'
+    required: true
+  username:
+    description: 'Registry username'
+    required: false
+    default: ''
+  password:
+    description: 'Registry password/token'
+    required: false
+    default: ''
+  push:
+    description: 'Whether to push the chart. Set to false for packaging validation only.'
+    required: false
+    default: 'true'
+  extra-repos:
+    description: 'Extra Helm repositories for dependency resolution (JSON array: [{"name":"repo","url":"https://..."}])'
+    required: false
+    default: '[]'
+  app-version:
+    description: 'Set the appVersion on the chart'
+    required: false
+    default: ''
+
+outputs:
+  chart-name:
+    description: 'Name of the packaged chart'
+    value: ${{ steps.push.outputs.chart-name }}
+  chart-version:
+    description: 'Version of the packaged chart'
+    value: ${{ steps.push.outputs.chart-version }}
+  chart-file:
+    description: 'Path to the packaged .tgz file'
+    value: ${{ steps.push.outputs.chart-file }}
+  chart-ref:
+    description: 'Full OCI reference of the pushed chart (empty if push is false)'
+    value: ${{ steps.push.outputs.chart-ref }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Helm
+      uses: azure/setup-helm@v4
+
+    - name: Login to registry
+      if: inputs.push == 'true' && inputs.username != '' && inputs.password != ''
+      shell: bash
+      env:
+        HELM_REGISTRY: ${{ inputs.registry }}
+        HELM_USERNAME: ${{ inputs.username }}
+        HELM_PASSWORD: ${{ inputs.password }}
+      run: echo "${HELM_PASSWORD}" | helm registry login "${HELM_REGISTRY}" -u "${HELM_USERNAME}" --password-stdin
+
+    - name: Add dependency repos
+      shell: bash
+      env:
+        EXTRA_REPOS: ${{ inputs.extra-repos }}
+      run: |
+        if [ "${EXTRA_REPOS}" != "[]" ] && [ -n "${EXTRA_REPOS}" ]; then
+          echo "${EXTRA_REPOS}" | jq -c '.[]' | while read -r repo; do
+            name=$(echo "${repo}" | jq -r '.name')
+            url=$(echo "${repo}" | jq -r '.url')
+            username=$(echo "${repo}" | jq -r '.username // empty')
+            password=$(echo "${repo}" | jq -r '.password // empty')
+            if [ -n "${username}" ] && [ -n "${password}" ]; then
+              helm repo add "${name}" "${url}" --username "${username}" --password "${password}"
+            else
+              helm repo add "${name}" "${url}"
+            fi
+          done
+          helm repo update
+        fi
+
+    - name: Package and push
+      id: push
+      shell: bash
+      env:
+        CHART_PATH: ${{ inputs.chart-path }}
+        CHART_VERSION: ${{ inputs.chart-version }}
+        APP_VERSION: ${{ inputs.app-version }}
+        OCI_REGISTRY: "oci://${{ inputs.registry-path }}"
+        DO_PUSH: ${{ inputs.push }}
+      run: |
+        set -eo pipefail
+        # Build dependencies if needed
+        if [ -f "${CHART_PATH}/Chart.lock" ] || grep -q 'dependencies:' "${CHART_PATH}/Chart.yaml" 2>/dev/null; then
+          helm dependency build "${CHART_PATH}"
+        fi
+        # Package
+        PACKAGE_ARGS="--version ${CHART_VERSION}"
+        if [ -n "${APP_VERSION}" ]; then
+          PACKAGE_ARGS="${PACKAGE_ARGS} --app-version ${APP_VERSION}"
+        fi
+        # shellcheck disable=SC2086
+        helm package "${CHART_PATH}" ${PACKAGE_ARGS}
+        CHART_NAME=$(grep '^name:' "${CHART_PATH}/Chart.yaml" | awk '{print $2}')
+        CHART_FILE="${CHART_NAME}-${CHART_VERSION}.tgz"
+        # Push
+        CHART_REF=""
+        if [ "${DO_PUSH}" = "true" ]; then
+          helm push "${CHART_FILE}" "${OCI_REGISTRY}"
+          CHART_REF="${OCI_REGISTRY}/${CHART_NAME}:${CHART_VERSION}"
+          echo "Pushed ${CHART_REF}"
+        else
+          echo "Push disabled, packaged ${CHART_FILE}"
+        fi
+        # Outputs
+        echo "chart-name=${CHART_NAME}" >> "$GITHUB_OUTPUT"
+        echo "chart-version=${CHART_VERSION}" >> "$GITHUB_OUTPUT"
+        echo "chart-file=${CHART_FILE}" >> "$GITHUB_OUTPUT"
+        echo "chart-ref=${CHART_REF}" >> "$GITHUB_OUTPUT"
