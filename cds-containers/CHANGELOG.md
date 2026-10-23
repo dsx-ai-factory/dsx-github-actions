@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- Update tools to uv 0.13.5, pip 26.2.2, certifi 2026.10.19, and Bazel 9.3.1 for the CA incident fixes.
+- Update tools to uv 0.13.5, pip 26.2.2, certifi 2026.10.23, and Bazel 9.3.1 for the CA incident fixes.
 - Retain Bazel 6.5.0 compatibility using the distribution-managed Java trust store; replace `bazel8` with `bazel9` as the default.
 
 ## [0.1.0] - 2026-10-23

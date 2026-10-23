@@ -185,7 +185,7 @@ All images refresh distro-managed CA stores with patched package minimums:
 ### Tools CA trust follow-up (unreleased)
 
 The tools image updates uv to 0.13.5, system Python pip to 26.2.2, and certifi to
-2026.10.19. Upgrading uv alone does not update Ubuntu's Python packages.
+2026.10.23. Upgrading uv alone does not update Ubuntu's Python packages.
 Bazel 9.3.1 includes the upstream Java CA fix. Bazel 6.5.0 remains available for
 compatibility; `ca-certificates-java` and the system bazelrc select the updated
 system Java trust store for both Bazel versions. The default is `bazel9`. Consumers

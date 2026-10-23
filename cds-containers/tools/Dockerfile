@@ -44,7 +44,7 @@ COPY tools/bazel.bazelrc /etc/bazel.bazelrc
 # Install uv and uvx, then update system Python pip and certifi.
 COPY --from=ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff /uv /uvx /usr/local/bin/
 RUN uv pip install --system --python /usr/bin/python3 --upgrade \
-    'pip==26.2.2' 'certifi==2026.10.19'
+    'pip==26.2.2' 'certifi==2026.10.23'
 
 # Install Node.js 24 LTS from the signed NodeSource repository. Pin the signing
 # key identity instead of executing the remote setup script.
