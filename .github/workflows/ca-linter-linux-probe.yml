@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: CA linter Linux compatibility probe
+on:
+  push:
+    branches: [fix/ca-linter-linux-probe]
+permissions:
+  contents: read
+jobs:
+  linter:
+    runs-on: linux-amd64-cpu4
+    timeout-minutes: 20
+    container:
+      image: golang:${{ matrix.go }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - go: 1.27.3
+            tools: v0.52.0
+            staticcheck: v0.8.2
+          - go: 1.27.3
+            tools: v0.52.0
+            staticcheck: v0.7.0
+          - go: 1.26.10
+            tools: v0.45.0
+            staticcheck: v0.7.0
+          - go: 1.26.10
+            tools: v0.45.0
+            staticcheck: v0.6.1
+    env:
+      GOTOOLCHAIN: local
+      EXPECTED_GO: ${{ matrix.go }}
+      X_TOOLS: ${{ matrix.tools }}
+      STATICCHECK: ${{ matrix.staticcheck }}
+    steps:
+      - name: Build the unchanged v1 CLI with the selected compatibility libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(go env GOVERSION)" == "go$EXPECTED_GO" ]]
+          go version
+          mkdir -p /tmp/ca-linter-build
+          cd /tmp/ca-linter-build
+          go mod init ca-linter-compat-probe
+          go mod edit -go="$EXPECTED_GO" \
+            -require=github.com/golangci/golangci-lint@v1.64.8 \
+            -require="golang.org/x/tools@$X_TOOLS" \
+            -require="honnef.co/go/tools@$STATICCHECK"
+          go install -mod=mod github.com/golangci/golangci-lint/cmd/golangci-lint
+          go version -m /go/bin/golangci-lint
+      - name: Exercise sequential v1 CLI, config, and negative findings on Linux
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ca-linter-fixture
+          cd /tmp/ca-linter-fixture
+          printf 'module ca-linter-fixture\n\ngo %s\n' "$EXPECTED_GO" > go.mod
+          printf 'package main\nimport "fmt"\nfunc main() { fmt.Println("hello") }\n' > hello.go
+          printf 'linters:\n  disable-all: true\n  enable: [govet, errcheck, ineffassign, staticcheck, unused]\n' > .golangci.yml
+          lint() {
+            set +e
+            /go/bin/golangci-lint "$@" > lint.stdout 2> lint.stderr
+            result=$?
+            set -e
+            head -c 3000 lint.stdout
+            head -c 3000 lint.stderr
+            return "$result"
+          }
+          lint run --no-config --disable-all --enable=govet hello.go
+          lint run --config .golangci.yml hello.go
+          printf 'package main\nimport "fmt"\nfunc main() { fmt.Printf("%%d", "not an integer") }\n' > bad.go
+          if lint run --no-config --disable-all --enable=govet bad.go; then
+            echo '::error::The invalid Printf call was not reported'
+            exit 1
+          else
+            [[ "$?" == 1 ]]
+          fi
