@@ -62,7 +62,7 @@ class ContainerSecurityPolicyTests(unittest.TestCase):
         self.assertIn('"nodejs=${NODEJS_VERSION}"', dockerfile)
         self.assertIn('ge "24.22.1"', dockerfile)
         self.assertIn("signed-by=/usr/share/keyrings/nodesource.gpg", dockerfile)
-        for tool in ("BAZEL6_VERSION", "BAZEL8_VERSION", "KUBECTL_VERSION",
+        for tool in ("BAZEL6_VERSION", "BAZEL9_VERSION", "KUBECTL_VERSION",
                      "KUBELOGIN_VERSION", "NGCCLI_VERSION", "HELM_VERSION",
                      "TERRAFORM_VERSION", "TERRAGRUNT_VERSION", "REGCTL_VERSION"):
             self.assertIn(f"ARG {tool}=", dockerfile)

@@ -92,8 +92,8 @@ NODE
         check_ca_certificates tools
         bazel --version
         bazel6 --version
-        bazel8 --version
-        test "$(readlink -f "$(command -v bazel)")" = "$(readlink -f "$(command -v bazel8)")"
+        bazel9 --version
+        test "$(readlink -f "$(command -v bazel)")" = "$(readlink -f "$(command -v bazel9)")"
         kubectl version --client
         kubelogin --version
         helm version --short
@@ -109,10 +109,21 @@ NODE
         npm --version
         python3 --version
         pip3 --version
+        python3 <<'PYTHON'
+import certifi
+import pip
+import pip._vendor.certifi as pip_certifi
+
+assert pip.__version__ == "26.2.2", pip.__version__
+assert certifi.__version__ == "2026.10.19", certifi.__version__
+assert pip_certifi.__version__ == "2026.10.19", pip_certifi.__version__
+print("Verified system pip and both certifi bundles")
+PYTHON
         git --version
         git lfs version
         make --version
         uv --version
+        test "$(uv --version | cut -d ' ' -f2)" = "0.13.5"
         uvx --version
         ;;
     *)

@@ -16,13 +16,13 @@ Comprehensive tooling for infrastructure automation, CI/CD, and Kubernetes opera
 **Includes**:
 - **Bazel** (multiple versions):
   - `bazel6` - Bazel 6.5.0 (for KubeVirt compatibility)
-  - `bazel8` - Bazel 8.4.0 (latest stable)
-  - `bazel` - Default symlink (→ bazel8)
+  - `bazel9` - Bazel 9.3.1
+  - `bazel` - Default symlink (→ bazel9)
 - **Kubernetes**: kubectl, kubelogin, helm
 - **Infrastructure**: terraform, terragrunt
 - **NVIDIA**: NGC CLI
 - **Container tools**: docker CLI, regctl
-- **Dev tools**: Node.js 24.22.1, Python 3, git, make, jq, yq, uv (Python package manager)
+- **Dev tools**: Node.js 24.22.1, Python 3, git, make, jq, yq, uv 0.13.5 (Python package manager)
 
 **Size**: ~500MB
 
@@ -182,6 +182,16 @@ All images refresh distro-managed CA stores with patched package minimums:
 `20250419+deb13u1`, and [Ubuntu](https://ubuntu.com/security/notices/USN-8944-1)
 `20260816ubuntu0.22.04.1`. No custom root blocklist or TLS bypass is used.
 
+### Tools CA trust follow-up (unreleased)
+
+The tools image updates uv to 0.13.5, system Python pip to 26.2.2, and certifi to
+2026.10.19. Upgrading uv alone does not update Ubuntu's Python packages.
+Bazel 9.3.1 includes the upstream Java CA fix. Bazel 6.5.0 remains available for
+compatibility; `ca-certificates-java` and the system bazelrc select the updated
+system Java trust store for both Bazel versions. The default is `bazel9`. Consumers
+calling `bazel8` must update their pipelines and validate their builds with Bazel 9.
+NGC CLI's independently bundled trust stores remain a separate follow-up.
+
 ### Updating Containers
 
 Pushes to `main` and copy-pr-bot branches (`pull-request/**`) build and smoke-test
@@ -325,11 +335,11 @@ steps:
   - name: Build with Bazel 6
     run: bazel6 build //...
 
-  # Use Bazel 8.4.0 explicitly
-  - name: Build with Bazel 8
-    run: bazel8 build //...
+  # Use Bazel 9.3.1 explicitly
+  - name: Build with Bazel 9
+    run: bazel9 build //...
 
-  # Use default (currently Bazel 8.4.0)
+  # Use default (currently Bazel 9.3.1)
   - name: Build with default Bazel
     run: bazel build //...
 ```

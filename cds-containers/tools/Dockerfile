@@ -19,6 +19,7 @@ RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         build-essential \
         ca-certificates \
+        ca-certificates-java \
         curl \
         git \
         git-lfs \
@@ -36,6 +37,14 @@ RUN apt-get update \
     && apt-get autoremove \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Bazel 6 needs the distribution-managed Java trust store.
+COPY tools/bazel.bazelrc /etc/bazel.bazelrc
+
+# Install uv and uvx, then update system Python pip and certifi.
+COPY --from=ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff /uv /uvx /usr/local/bin/
+RUN uv pip install --system --python /usr/bin/python3 --upgrade \
+    'pip==26.2.2' 'certifi==2026.10.19'
 
 # Install Node.js 24 LTS from the signed NodeSource repository. Pin the signing
 # key identity instead of executing the remote setup script.
@@ -143,33 +152,21 @@ RUN curl -fsSL -o terragrunt "https://github.com/gruntwork-io/terragrunt/release
     && chmod +x /usr/local/bin/terragrunt \
     && terragrunt --version
 
-# bazel - multiple versions for different projects
-# Install Bazel 6.5.0 (required for KubeVirt - VMAAS-708, NID-8024)
+# Bazel 6.5.0 is retained for KubeVirt compatibility (VMAAS-708, NID-8024).
 ARG BAZEL6_VERSION="6.5.0"
-RUN curl -fsSL -o bazel6 "https://github.com/bazelbuild/bazel/releases/download/${BAZEL6_VERSION}/bazel-${BAZEL6_VERSION}-linux-x86_64" \
-    && mv ./bazel6 /usr/local/bin/bazel-${BAZEL6_VERSION} \
+RUN curl -fsSL -o /usr/local/bin/bazel-${BAZEL6_VERSION} "https://github.com/bazelbuild/bazel/releases/download/${BAZEL6_VERSION}/bazel-${BAZEL6_VERSION}-linux-x86_64" \
     && chmod +x /usr/local/bin/bazel-${BAZEL6_VERSION} \
     && ln -s /usr/local/bin/bazel-${BAZEL6_VERSION} /usr/local/bin/bazel6 \
     && bazel6 --version
 
-# Install Bazel 8.4.0 (latest stable for other projects)
-ARG BAZEL8_VERSION="8.4.0"
-RUN curl -fsSL -o bazel8 "https://github.com/bazelbuild/bazel/releases/download/${BAZEL8_VERSION}/bazel-${BAZEL8_VERSION}-linux-x86_64" \
-    && mv ./bazel8 /usr/local/bin/bazel-${BAZEL8_VERSION} \
-    && chmod +x /usr/local/bin/bazel-${BAZEL8_VERSION} \
-    && ln -s /usr/local/bin/bazel-${BAZEL8_VERSION} /usr/local/bin/bazel8 \
-    && bazel8 --version
-
-# Default bazel points to version 8 (latest)
-RUN ln -s /usr/local/bin/bazel8 /usr/local/bin/bazel \
-    && echo "Installed Bazel versions:" \
-    && bazel6 --version \
-    && bazel8 --version \
+# Bazel 9.3.1 is the default and includes a patched bundled JDK trust store.
+ARG BAZEL9_VERSION="9.3.1"
+RUN curl -fsSL -o /usr/local/bin/bazel-${BAZEL9_VERSION} "https://github.com/bazelbuild/bazel/releases/download/${BAZEL9_VERSION}/bazel-${BAZEL9_VERSION}-linux-x86_64" \
+    && chmod +x /usr/local/bin/bazel-${BAZEL9_VERSION} \
+    && ln -s /usr/local/bin/bazel-${BAZEL9_VERSION} /usr/local/bin/bazel9 \
+    && ln -s /usr/local/bin/bazel9 /usr/local/bin/bazel \
+    && bazel9 --version \
     && bazel --version
-
-# uv (latest version: 0.11.7)
-COPY --from=ghcr.io/astral-sh/uv:0.11.7@sha256:240fb85ab0f263ef12f492d8476aa3a2e4e1e333f7d67fbdd923d00a506a516a /uv /uvx /usr/local/bin/
-RUN uv self version
 
 # Note: CDS CLI is not included as GitHub runners cannot reach internal GitLab
 # For internal GitLab runners, use the GitLab version of this container
