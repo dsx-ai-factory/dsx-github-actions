@@ -1,6 +1,25 @@
 # DSX GitHub Actions
 
-A collection of reusable GitHub Actions for standardizing CI/CD workflows across NVIDIA projects.
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
+DSX GitHub Actions provides reusable CI/CD steps and workflows for maintainers
+and platform teams working on NVIDIA DSX projects. Copying security scans,
+container builds, and release logic between repositories makes fixes and policy
+updates hard to apply consistently. This project keeps that shared logic in one
+place so callers can pin a reviewed revision and configure it for their project.
+
+### Architecture and integrations
+
+Composite actions in `.github/actions/` run as steps in a caller's job. Reusable
+workflows in `.github/workflows/` define jobs called through `workflow_call`.
+They configure tools such as [CodeQL](https://github.com/github/codeql-action),
+[TruffleHog](https://github.com/trufflesecurity/trufflehog), and
+[Grype](https://github.com/anchore/grype), and connect release artifacts to
+GitHub Releases and NVIDIA NGC. Callers select actions or workflows, provide
+their source code and build tools, and grant the required permissions and
+registry credentials. The scope is CI execution and artifact publication in
+GitHub Actions; runner infrastructure and project build logic remain with the
+calling repository.
 
 ## 🚀 Available Actions
 
@@ -89,7 +108,20 @@ Shared chart jobs check a freshly fetched, authenticated NGC index before
 preparation. Verified existing charts skip dependency resolution and packaging.
 Only confirmed missing chart versions are built; lookup errors fail the job.
 
-### Security Scanning (Rust)
+### Security Scanning (Go)
+
+In a Go repository with a `go.mod` file, save this workflow as
+`.github/workflows/security.yml` and push it to GitHub. The `Security Checks`
+run appears in the Actions tab. A successful run uploads the analysis to the
+Security tab; findings at or above the default severity threshold fail the job.
+
+The examples use GitHub-hosted `ubuntu-latest` runners. CodeQL needs a runner
+that supports its Node.js 24 action runtime, Bash, Git, `jq`, and enough memory
+for the source being analyzed. The setup step installs the Go version from
+`go.mod`; the build must succeed with `go build ./...`. PR comments also need
+`gh` and `pull-requests: write`. Secret scanning and container build examples
+need Docker. If you select a self-hosted runner, verify its tools and your access
+to its runner group; see the [runtime requirements](.github/workflows/README.md#runtime-requirements).
 
 ```yaml
 name: Security Checks
@@ -97,29 +129,40 @@ name: Security Checks
 on: [push, pull_request]
 
 permissions:
+  actions: read
   contents: read
   security-events: write
 
 jobs:
   security:
-    runs-on: linux-amd64-cpu4
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
 
       - name: CodeQL Analysis
         uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
         with:
-          languages: "rust"
-          build-command: "cargo build --workspace"
+          languages: "go"
+          build-mode: "manual"
+          build-command: "go build ./..."
 ```
 
-### Security Scanning (Go)
+### Add CodeQL to an Existing Go Job
+
+Use this step after checkout and Go setup. `build-command` runs only with
+`build-mode: manual`. For Rust, use `build-mode: none` as shown in the
+[language-specific examples](.github/actions/codeql-scan/README.md#rust-project-example).
 
 ```yaml
 - name: CodeQL Analysis
   uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
   with:
     languages: "go"
+    build-mode: "manual"
     build-command: "go build ./..."
 ```
 
@@ -274,17 +317,22 @@ name: Security
 on: [push, pull_request]
 
 permissions:
+  actions: read
   contents: read
   security-events: write
   pull-requests: write
 
 jobs:
   scan:
-    runs-on: linux-amd64-cpu4
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # Required for TruffleHog
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
 
       # Secret scanning
       - uses: dsx-ai-factory/dsx-github-actions/.github/actions/trufflehog-scan@55d1e0af17fb4431edaca19fbd5c78fecd29d18a
@@ -292,9 +340,11 @@ jobs:
           post-pr-comment: "true"
 
       # Code analysis
-      - uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@55d1e0af17fb4431edaca19fbd5c78fecd29d18a
+      - uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
         with:
           languages: "go"
+          build-mode: "manual"
+          build-command: "go build ./..."
           post-pr-comment: "true"
 
 ```
@@ -304,17 +354,22 @@ jobs:
 ```yaml
 jobs:
   codeql:
-    runs-on: linux-amd64-cpu4
+    runs-on: ubuntu-latest
     timeout-minutes: 360
     permissions:
+      actions: read
       security-events: write
       contents: read
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
       - uses: dsx-ai-factory/dsx-github-actions/.github/actions/codeql-scan@d15d46d22d09f7111177a6f5e9f7ae9933e067b2 # v1.20.0
         with:
-          languages: "rust"
-          build-command: "cargo build --workspace"
+          languages: "go"
+          build-mode: "manual"
+          build-command: "go build ./..."
 
 ```
 
@@ -323,8 +378,9 @@ jobs:
 ```yaml
 jobs:
   build-and-scan:
-    runs-on: linux-amd64-cpu4
+    runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       pull-requests: write
     steps:
@@ -350,18 +406,33 @@ This repository ships with a [`pre-commit`](https://pre-commit.com/) configurati
    - `pipx install pre-commit`
    - `pip install pre-commit`
    - `brew install pre-commit`
-2. Run `pre-commit install` at the repository root to enable the git hook.
-3. Run `pre-commit run --all-files` once to ensure every workflow and shell script passes ShellCheck/actionlint.
+2. Clone the repository and run its checks:
+
+   ```bash
+   git clone https://github.com/dsx-ai-factory/dsx-github-actions.git
+   cd dsx-github-actions
+   pre-commit run --all-files
+   ```
+
+3. Run `pre-commit install` at the repository root to enable the git hook.
 
 If CI still fails, execute `pre-commit run actionlint --all-files` or `pre-commit run shellcheck --all-files` locally to focus on the failing hook.
 
 ## Contributing
 
-1. Create action in `.github/actions/my-action/`
-2. Add `action.yml` and `README.md`
-3. Test with multiple projects
-4. Update this README
-5. Create version tag
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for the fork workflow, DCO signoff,
+and pull request requirements. Add an action's `action.yml` and README under
+`.github/actions/`, test it with caller projects, and update the action table
+above. Releases follow the automatic versioning process described above.
+
+## Support and project policies
+
+- Use [GitHub Issues](https://github.com/dsx-ai-factory/dsx-github-actions/issues)
+  for support questions, bug reports, and feature requests.
+- Follow the [Code of Conduct](CODE_OF_CONDUCT.md) when participating.
+- Report vulnerabilities through the private channels in [SECURITY.md](SECURITY.md).
+- Review ownership is recorded in [CODEOWNERS](.github/CODEOWNERS).
+- See the [documentation index](#-documentation) for action inputs and workflow setup.
 
 ## 📋 Repository Structure
 
