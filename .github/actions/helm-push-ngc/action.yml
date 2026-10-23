@@ -27,7 +27,7 @@ inputs:
     description: "Org and Team path on NGC"
     required: true
   ngc-duplicate:
-    description: "Action for duplicate Helm Chart versions: skip, overwrite, fail"
+    description: "Action for duplicate Helm Chart versions: skip, overwrite, fail, verify"
     required: false
     default: "skip"
   ngc-registry:
@@ -89,7 +89,6 @@ runs:
         UTILS_PATH="${{ github.action_path }}/../helm-shared/scripts/utils.sh"
         "$UTILS_PATH" helm_ngc_repo_add
         "$UTILS_PATH" helm_ngc_push
-        "$UTILS_PATH" helm_check_push_errors
 
     - name: Set Outputs
       id: set_outputs

@@ -30,12 +30,17 @@ steps:
 | `ngc-push` | Enable pushing to NGC | No | true |
 | `ngc-key` | NGC API Key | No | |
 | `ngc-path` | NGC Org/Team path | No | |
-| `ngc-duplicate` | Action for duplicate versions | No | skip |
+| `ngc-duplicate` | Action for duplicate versions: `skip`, `overwrite`, `fail`, or `verify` | No | skip |
 | `ngc-registry` | NGC Registry URL | No | https://helm.ngc.nvidia.com/ |
 
 Use `lint: true` with `lint-values: '{"endpoint":"https://example.invalid"}'` when chart validation requires configuration.
 Use non-secret values. The temporary values file is removed after lint succeeds or fails.
 Set `ngc-push: false` to lint and package without registry authentication or publication.
+
+See [duplicate version policies](../helm-push-ngc/README.md#duplicate-versions)
+for `skip`, `fail`, `overwrite`, and `verify`. The opt-in `verify` policy requires
+`python3` and reuses an existing version only after comparing its downloaded
+contents with the packaged chart. Verified reuse sets `push-skipped` to `true`.
 
 ## Outputs
 
