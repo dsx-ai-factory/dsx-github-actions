@@ -47,6 +47,10 @@ while IFS=$'\t' read -r platform digest; do
     "$REPORTS/$key.syft.json" >/dev/null || fail "Syft scanned the wrong manifest for $platform"
   jq -e '.spdxVersion and .SPDXID == "SPDXRef-DOCUMENT"' \
     "$REPORTS/$key.spdx.json" >/dev/null || fail "Invalid SPDX report for $platform"
+  if [[ "${PREPARE_ATTESTATION:-false}" == 'true' ]]; then
+    script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+    bash "$script_dir/limit-spdx.sh" "$REPORTS/$key.spdx.json"
+  fi
 done < "$REPORTS/platforms.tsv"
 jq -Rn --arg digest "$EXPECTED_DIGEST" \
   '{digest: $digest, platforms: [inputs | split("\t") | {platform: .[0], digest: .[1]}]}' \

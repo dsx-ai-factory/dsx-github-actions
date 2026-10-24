@@ -181,6 +181,14 @@ Callers remain responsible for release-event restrictions and concurrency orderi
 of mutable tags such as `latest`. Signing does not imply vulnerability scanning or
 application/runtime testing; those gates must be explicitly enabled or supplied.
 
+GitHub's signing action limits each SPDX predicate to 16 MiB. When preparing
+attestations, oversized reports get shorter document-local file IDs and matching
+references in a distinct document namespace. No packages, files, checksums,
+licenses, or relationships are removed. The evidence artifact also retains
+`*.spdx.original.json` and `*.spdx-id-map.json` for comparison and reversal.
+Smaller reports stay byte-for-byte unchanged. A report that still exceeds the
+limit fails before candidate publication; scan-only callers are unchanged.
+
 The signed path requires GitHub artifact-attestation access for the caller repo,
 registry support for the OCI attestations written by `actions/attest`, and a Linux
 runner with Docker, Bash, jq, and a `gh` CLI supporting `--bundle-from-oci`.

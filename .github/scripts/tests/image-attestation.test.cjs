@@ -68,7 +68,9 @@ if (args.includes('syft-test')) {
   const key = platform.replaceAll('/', '-');
   const digest = process.env.WRONG_SYFT_DIGEST || metadata.platforms.find(p => p.platform === platform).digest;
   fs.writeFileSync(path.join(reportDir, key + '.syft.json'), JSON.stringify({source: {metadata: {manifestDigest: digest}}}));
-  fs.writeFileSync(path.join(reportDir, key + '.spdx.json'), JSON.stringify({spdxVersion: 'SPDX-2.3', SPDXID: 'SPDXRef-DOCUMENT'}));
+  fs.writeFileSync(path.join(reportDir, key + '.spdx.json'), process.env.SPDX_FIXTURE
+    ? fs.readFileSync(process.env.SPDX_FIXTURE)
+    : JSON.stringify({spdxVersion: 'SPDX-2.3', SPDXID: 'SPDXRef-DOCUMENT'}));
 } else if (args.includes('grype-test')) {
   const source = args.find(a => a.startsWith('sbom:/reports/'));
   const key = path.basename(source).replace('.syft.json', '');
@@ -223,3 +225,138 @@ test('promotion fails if a release tag resolves to another digest', t => {
   const f = fixture(t);
   assert.notEqual(f.run(path.join(scripts, 'promote-attested-image.sh'), { PROMOTED_DIGEST: fakeDigest }).status, 0);
 });
+
+function spdxFixture(t, overrides = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'spdx-limit-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const document = {
+    spdxVersion: 'SPDX-2.3', SPDXID: 'SPDXRef-DOCUMENT',
+    documentNamespace: 'https://example.invalid/spdx/fixture',
+    name: 'fixture', dataLicense: 'CC0-1.0',
+    creationInfo: { creators: ['Tool: syft-test'], created: '2026-10-24T00:00:00Z' },
+    files: [{ SPDXID: 'SPDXRef-File-original', fileName: 'app', checksums: [] }],
+    ...overrides,
+  };
+  const file = path.join(dir, 'linux-amd64.spdx.json');
+  fs.writeFileSync(file, JSON.stringify(document));
+  const compact = () => spawnSync('jq', ['-cf', path.join(buildScripts, 'compact-spdx.jq'), file], { encoding: 'utf8' });
+  const limit = () => spawnSync('bash', [path.join(buildScripts, 'limit-spdx.sh'), file], { encoding: 'utf8' });
+  return { dir, file, document, compact, limit };
+}
+
+test('SPDX compaction changes only file IDs and their typed references', t => {
+  const a = 'SPDXRef-File-original', b = 'SPDXRef-File-second';
+  const external = `DocumentRef-other:${a}`;
+  const f = spdxFixture(t, {
+    documentDescribes: ['SPDXRef-Package-app', a],
+    packages: [{ SPDXID: 'SPDXRef-Package-app', name: a, hasFiles: [a, b] }],
+    files: [
+      { SPDXID: a, fileName: a, checksums: [], fileDependencies: [b, external] },
+      { SPDXID: b, fileName: 'second', checksums: [], comment: a },
+    ],
+    relationships: [{ spdxElementId: a, relatedSpdxElement: b, relationshipType: 'CONTAINS' },
+      { spdxElementId: a, relatedSpdxElement: external, relationshipType: 'OTHER' }],
+    snippets: [{ SPDXID: 'SPDXRef-Snippet-1', name: a, snippetFromFile: b,
+      ranges: [{ startPointer: { reference: a, offset: 0 }, endPointer: { reference: b, offset: 1 } }] }],
+  });
+  const result = f.compact();
+  assert.equal(result.status, 0, result.stderr);
+  const { document, idMap } = JSON.parse(result.stdout);
+  const expected = structuredClone(f.document);
+  expected.documentNamespace += '/dsx-file-ids-v1';
+  expected.documentDescribes[1] = 'SPDXRef-f0';
+  expected.packages[0].hasFiles = ['SPDXRef-f0', 'SPDXRef-f1'];
+  expected.files[0].SPDXID = 'SPDXRef-f0';
+  expected.files[0].fileDependencies = ['SPDXRef-f1', external];
+  expected.files[1].SPDXID = 'SPDXRef-f1';
+  expected.relationships[0].spdxElementId = 'SPDXRef-f0';
+  expected.relationships[0].relatedSpdxElement = 'SPDXRef-f1';
+  expected.relationships[1].spdxElementId = 'SPDXRef-f0';
+  expected.snippets[0].snippetFromFile = 'SPDXRef-f1';
+  expected.snippets[0].ranges[0].startPointer.reference = 'SPDXRef-f0';
+  expected.snippets[0].ranges[0].endPointer.reference = 'SPDXRef-f1';
+  assert.deepEqual(document, expected);
+  assert.deepEqual(idMap.fileIds, { 'SPDXRef-f0': a, 'SPDXRef-f1': b });
+  assert.equal(idMap.originalNamespace, f.document.documentNamespace);
+});
+
+for (const [name, overrides] of [
+  ['duplicate file IDs', { files: [{ SPDXID: 'SPDXRef-File-1' }, { SPDXID: 'SPDXRef-File-1' }] }],
+  ['collision with a package', { packages: [{ SPDXID: 'SPDXRef-f0' }] }],
+  ['collision with a snippet', { snippets: [{ SPDXID: 'SPDXRef-f0' }] }],
+  ['file duplicating the document ID', { files: [{ SPDXID: 'SPDXRef-DOCUMENT' }] }],
+  ['unsupported SPDX version', { spdxVersion: 'SPDX-2.2' }],
+]) {
+  test(`SPDX compaction rejects ${name}`, t => {
+    const f = spdxFixture(t, overrides);
+    assert.notEqual(f.compact().status, 0);
+  });
+}
+
+test('small SPDX reports stay byte-for-byte unchanged with no sidecars', t => {
+  const f = spdxFixture(t);
+  const before = fs.readFileSync(f.file);
+  const result = f.limit();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(fs.readFileSync(f.file), before);
+  assert.deepEqual(fs.readdirSync(f.dir), [path.basename(f.file)]);
+});
+
+test('oversized reports retain every record, exact source bytes, and an inverse ID map', t => {
+  const files = Array.from({ length: 1024 }, (_, n) => ({
+    SPDXID: `SPDXRef-File-${n}-${'a'.repeat(8300)}`, fileName: `app/${n}`, checksums: [],
+  }));
+  const f = spdxFixture(t, { files, relationships: files.map(file => ({
+    spdxElementId: 'SPDXRef-DOCUMENT', relatedSpdxElement: file.SPDXID, relationshipType: 'DESCRIBES',
+  })) });
+  const before = fs.readFileSync(f.file);
+  assert(before.length > 16777216);
+  const result = f.limit();
+  assert.equal(result.status, 0, result.stderr);
+  const compacted = JSON.parse(fs.readFileSync(f.file));
+  const map = JSON.parse(fs.readFileSync(f.file.replace('.spdx.json', '.spdx-id-map.json')));
+  assert(fs.statSync(f.file).size <= 16777216);
+  assert.deepEqual(fs.readFileSync(f.file.replace('.spdx.json', '.spdx.original.json')), before);
+  assert.equal(compacted.files.length, files.length);
+  assert.equal(compacted.relationships.length, files.length);
+  compacted.documentNamespace = map.originalNamespace;
+  for (const file of compacted.files) file.SPDXID = map.fileIds[file.SPDXID];
+  for (const relation of compacted.relationships) relation.relatedSpdxElement = map.fileIds[relation.relatedSpdxElement];
+  assert.deepEqual(compacted, f.document);
+});
+
+test('reports still over the limit fail without dropping or replacing evidence', t => {
+  const f = spdxFixture(t, { comment: 'x'.repeat(16777216) });
+  const before = fs.readFileSync(f.file);
+  const result = f.limit();
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /no evidence was removed/);
+  assert.deepEqual(fs.readFileSync(f.file), before);
+  assert.deepEqual(fs.readdirSync(f.dir), [path.basename(f.file)]);
+});
+
+test('pre-signing validation rejects an oversized SPDX report before returning subjects', t => {
+  const f = fixture(t, ['amd64']);
+  f.generate();
+  fs.writeFileSync(path.join(f.reports, 'linux-amd64.spdx.json'), JSON.stringify({
+    spdxVersion: 'SPDX-2.3', SPDXID: 'SPDXRef-DOCUMENT', comment: 'x'.repeat(16777216),
+  }));
+  const result = f.prepare();
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /16 MiB signing limit/);
+  assert.ok(!fs.existsSync(f.env.GITHUB_OUTPUT));
+});
+
+for (const prepare of ['false', 'true']) {
+  test(`large SBOM generation enforces the signing limit only when prepare-attestation=${prepare}`, t => {
+    const f = fixture(t, ['amd64']);
+    const source = spdxFixture(t, { comment: 'x'.repeat(16777216) });
+    f.env.SPDX_FIXTURE = source.file;
+    f.env.PREPARE_ATTESTATION = prepare;
+    const result = f.run(path.join(buildScripts, 'sbom-oci.sh'));
+    assert.equal(result.status === 0, prepare === 'false', result.stderr);
+    if (prepare === 'false') {
+      assert.deepEqual(fs.readFileSync(path.join(f.reports, 'linux-amd64.spdx.json')), fs.readFileSync(source.file));
+    }
+  });
+}

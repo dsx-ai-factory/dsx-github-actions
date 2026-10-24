@@ -11,7 +11,7 @@ Container images for CDS tooling, optimized for GitHub Actions workflows. These 
 ### 1. `cds-tools` - CDS Tools Container
 Comprehensive tooling for infrastructure automation, CI/CD, and Kubernetes operations.
 
-**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-tools:0.1.0`
+**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-tools:0.1.1`
 
 **Includes**:
 - **Bazel** (multiple versions):
@@ -30,7 +30,7 @@ Comprehensive tooling for infrastructure automation, CI/CD, and Kubernetes opera
 Lightweight Go 1.26.10 development environment with essential tooling. The `1.24`
 image name is retained for compatibility; it no longer identifies the toolchain version.
 
-**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:0.1.0`
+**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:0.1.1`
 
 **Includes**:
 - Go 1.26.10 (Alpine-based)
@@ -48,7 +48,7 @@ image name is retained for compatibility; it no longer identifies the toolchain 
 Full-featured Go 1.26.10 environment with better C library compatibility. The public
 image name is unchanged.
 
-**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-debian:0.1.0`
+**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-debian:0.1.1`
 
 **Size**: ~300MB+
 
@@ -71,7 +71,7 @@ jobs:
       packages: read  # Required to pull from GHCR
 
     container:
-      image: ghcr.io/dsx-ai-factory/dsx-cds-tools:0.1.0
+      image: ghcr.io/dsx-ai-factory/dsx-cds-tools:0.1.1
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -111,14 +111,14 @@ jobs:
           docker run --rm \
             -v $PWD:/workspace \
             -w /workspace \
-            ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:0.1.0 \
+            ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:0.1.1 \
             go build ./...
 ```
 
 ### Method 3: Building Custom Image Based on CDS Containers
 
 ```dockerfile
-FROM ghcr.io/dsx-ai-factory/dsx-cds-tools:0.1.0
+FROM ghcr.io/dsx-ai-factory/dsx-cds-tools:0.1.1
 
 # Add your custom tools
 RUN apt-get update && apt-get install -y \
@@ -151,7 +151,7 @@ WORKDIR /app
 ## 🏗️ Versioning and Updates
 
 ### Current Version
-The current version is defined in [`VERSION`](./VERSION): **0.1.0**
+The current version is defined in [`VERSION`](./VERSION): **0.1.1**
 
 This file contains only the semantic version number (e.g., `0.0.1`).
 
@@ -181,6 +181,12 @@ All images refresh distro-managed CA stores with patched package minimums:
 `20261020-r0`, [Debian](https://tracker.debian.org/news/1813397/accepted-ca-certificates-20250419deb13u1-source-into-stable-security/)
 `20250419+deb13u1`, and [Ubuntu](https://ubuntu.com/security/notices/USN-8944-1)
 `20260816ubuntu0.22.04.1`. No custom root blocklist or TLS bypass is used.
+
+The first `0.1.0` publication stopped before release tags because the tools
+SPDX report exceeded GitHub's 16 MiB attestation limit. `0.1.1` retries with
+shorter document-local file IDs while retaining every package, file, checksum,
+license, and relationship. The original report and inverse ID map remain in the
+evidence artifact. Container contents and tool versions are unchanged by this fix.
 
 ### Updating Containers
 
