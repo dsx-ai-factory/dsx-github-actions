@@ -44,6 +44,8 @@ while IFS=$'\t' read -r platform digest; do
     "$REPORTS/$key.syft.json" >/dev/null || fail "SBOM subject mismatch for $platform"
   jq -e '.spdxVersion and .SPDXID == "SPDXRef-DOCUMENT"' \
     "$REPORTS/$key.spdx.json" >/dev/null || fail "Invalid SBOM for $platform"
+  (( $(wc -c < "$REPORTS/$key.spdx.json") <= 16777216 )) \
+    || fail "SPDX report exceeds the 16 MiB signing limit for $platform"
 done < <(jq -r '.platforms[] | [.platform, .digest] | @tsv' "$REPORTS/image.json")
 
 # A plain single-platform manifest is already the root: attest it only once.

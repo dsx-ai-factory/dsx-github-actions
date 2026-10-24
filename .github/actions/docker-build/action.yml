@@ -241,6 +241,7 @@ runs:
         EXPECTED_DIGEST: ${{ steps.build.outputs.digest }}
         PLATFORMS: ${{ inputs.platforms }}
         REPORTS: ${{ steps.scan_vars.outputs.reports }}
+        PREPARE_ATTESTATION: ${{ inputs.prepare-attestation }}
         # Tool image pins live here, alongside the action version pins.
         SYFT_IMAGE: anchore/syft:v1.52.0@sha256:500e2d872ac019436926e8322b4fc1f39441d94d21f6f4046c6ff29b30e8cb02
       run: |
