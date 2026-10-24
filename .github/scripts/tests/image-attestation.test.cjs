@@ -240,7 +240,9 @@ function spdxFixture(t, overrides = {}) {
   const file = path.join(dir, 'linux-amd64.spdx.json');
   fs.writeFileSync(file, JSON.stringify(document));
   const compact = () => spawnSync('jq', ['-cf', path.join(buildScripts, 'compact-spdx.jq'), file], { encoding: 'utf8' });
-  const limit = () => spawnSync('bash', [path.join(buildScripts, 'limit-spdx.sh'), file], { encoding: 'utf8' });
+  const limit = (overrides = {}) => spawnSync('bash', [path.join(buildScripts, 'limit-spdx.sh'), file], {
+    env: { ...process.env, ...overrides }, encoding: 'utf8',
+  });
   return { dir, file, document, compact, limit };
 }
 
@@ -360,3 +362,65 @@ for (const prepare of ['false', 'true']) {
     }
   });
 }
+
+for (const [bytes, success] of [[16777216, true], [16777217, false]]) {
+  test(`SPDX signing limit at ${bytes} bytes ${success ? 'keeps the source unchanged' : 'fails closed'}`, t => {
+    const f = spdxFixture(t, { files: [], comment: '' });
+    f.document.comment = 'x'.repeat(bytes - fs.statSync(f.file).size);
+    fs.writeFileSync(f.file, JSON.stringify(f.document));
+    const before = fs.readFileSync(f.file);
+    assert.equal(before.length, bytes);
+    const result = f.limit();
+    assert.equal(result.status === 0, success, result.stderr);
+    if (!success) assert.match(result.stderr, /no evidence was removed/);
+    assert.deepEqual(fs.readFileSync(f.file), before);
+    assert.deepEqual(fs.readdirSync(f.dir), [path.basename(f.file)]);
+  });
+}
+
+for (const [name, suffix] of [['original', '.spdx.original.json'], ['map', '.spdx-id-map.json']]) {
+  test(`SPDX normalization refuses an existing ${name} sidecar`, t => {
+    const f = spdxFixture(t);
+    fs.appendFileSync(f.file, ' '.repeat(16777216));
+    const before = fs.readFileSync(f.file);
+    const sidecar = f.file.replace('.spdx.json', suffix);
+    const existing = Buffer.from(`existing ${name} evidence\n`);
+    fs.writeFileSync(sidecar, existing);
+    const result = f.limit();
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing to replace existing SPDX source evidence/);
+    assert.deepEqual(fs.readFileSync(f.file), before);
+    assert.deepEqual(fs.readFileSync(sidecar), existing);
+    assert.deepEqual(fs.readdirSync(f.dir).sort(), [path.basename(f.file), path.basename(sidecar)].sort());
+  });
+}
+
+test('SPDX normalization preserves source when final report rename fails', t => {
+  const f = spdxFixture(t);
+  fs.appendFileSync(f.file, ' '.repeat(16777216));
+  const before = fs.readFileSync(f.file);
+  const bin = path.join(f.dir, 'bin');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'mv'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const [source, destination] = process.argv.slice(2).filter(arg => arg !== '--');
+if (destination === process.env.FAIL_REPORT_RENAME) {
+  process.stderr.write('injected final SPDX report rename failure\\n');
+  process.exit(73);
+}
+fs.renameSync(source, destination);
+`, { mode: 0o755 });
+  const result = f.limit({
+    PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAIL_REPORT_RENAME: f.file,
+  });
+  assert.equal(result.status, 73, result.stderr);
+  assert.match(result.stderr, /injected final SPDX report rename failure/);
+  assert.deepEqual(fs.readFileSync(f.file), before);
+  const original = f.file.replace('.spdx.json', '.spdx.original.json');
+  const mapping = f.file.replace('.spdx.json', '.spdx-id-map.json');
+  assert.deepEqual(fs.readFileSync(original), before);
+  const map = JSON.parse(fs.readFileSync(mapping));
+  assert.deepEqual(map.fileIds, { 'SPDXRef-f0': f.document.files[0].SPDXID });
+  assert.deepEqual(fs.readdirSync(f.dir).sort(),
+    ['bin', path.basename(f.file), path.basename(original), path.basename(mapping)].sort());
+});
