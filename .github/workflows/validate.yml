@@ -1,161 +1,94 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: Validate
+# Branch-only canary, not for merging into main.
+name: SPDX Attestation Canary
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-      - 'pull-request/**'
 
-permissions:
-  contents: read
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  runtime-and-artifacts:
-    name: Runtime and artifact compatibility
-    if: github.event_name == 'workflow_dispatch'
+  build-tools:
+    name: Build and smoke-test the tools candidate
+    if: >-
+      github.repository == 'dsx-ai-factory/dsx-github-actions' &&
+      github.ref == 'refs/heads/test/spdx-attestation-canary-20261024'
     runs-on: linux-amd64-cpu4
-    timeout-minutes: 10
+    timeout-minutes: 45
     permissions:
       contents: read
-      actions: read
+      packages: write
+    outputs:
+      image: ${{ steps.smoke.outputs.image }}
+      digest: ${{ steps.smoke.outputs.digest }}
+      sbom-artifact-id: ${{ steps.smoke.outputs.sbom-artifact-id }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Verify the runner-bundled JavaScript runtime
-        id: runner-node
-        continue-on-error: true
-        uses: ./.github/tests/runner-node
-      - name: Prepare artifact fixtures
-        run: |
-          mkdir -p fixtures
-          printf '{"image":"example.invalid/test","digest":"sha256:fixture"}\n' > fixtures/digest.json
-          printf '{"version":"1.2.3-rc.1","commit":"fixture"}\n' > fixtures/rc-promotion-manifest.json
-      - name: Upload legacy evidence
-        id: legacy
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2, compatibility fixture
-        with:
-          name: legacy-runtime-fixture-${{ github.run_id }}-${{ github.run_attempt }}
-          path: fixtures/digest.json
-          if-no-files-found: error
-          retention-days: 1
-      - name: Upload current evidence
-        id: current
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: current-runtime-fixture-${{ github.run_id }}-${{ github.run_attempt }}
-          path: fixtures/rc-promotion-manifest.json
-          archive: true
-          if-no-files-found: error
-          retention-days: 1
-      - name: Download legacy evidence with the new action
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          artifact-ids: ${{ steps.legacy.outputs.artifact-id }}
-          path: restored/legacy
-          merge-multiple: true
-      - name: Download current evidence with the new action
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          artifact-ids: ${{ steps.current.outputs.artifact-id }}
-          path: restored/current
-          merge-multiple: true
-      - name: Verify unchanged artifact bytes and promotion ZIP contract
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ARTIFACT_ID: ${{ steps.current.outputs.artifact-id }}
-          ARTIFACT_DIGEST: ${{ steps.current.outputs.artifact-digest }}
-        run: |
-          cmp fixtures/digest.json restored/legacy/digest.json
-          cmp fixtures/rc-promotion-manifest.json restored/current/rc-promotion-manifest.json
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > promotion.zip
-          python3 - <<'PY'
-          import hashlib
-          import os
-          from pathlib import Path
-          import zipfile
-          data = Path("promotion.zip").read_bytes()
-          assert hashlib.sha256(data).hexdigest() == os.environ["ARTIFACT_DIGEST"].removeprefix("sha256:")
-          with zipfile.ZipFile("promotion.zip") as archive:
-              assert archive.namelist() == ["rc-promotion-manifest.json"]
-              assert archive.read("rc-promotion-manifest.json") == Path("fixtures/rc-promotion-manifest.json").read_bytes()
-          PY
-      - name: Require the runner security check after compatibility tests
-        if: always()
-        env:
-          RUNTIME_RESULT: ${{ steps.runner-node.outcome }}
-        run: test "$RUNTIME_RESULT" = success
-
-  actions:
-    name: Actions and workflows
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout repository
+      - name: Checkout the dispatched commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - name: Build the native tools candidate with complete platform SBOMs
+        id: build
+        uses: ./.github/actions/docker-build
         with:
-          node-version: "24.22.1"
-          package-manager-cache: false
+          image: ghcr.io/dsx-ai-factory/dsx-cds-tools
+          tags: candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          context: ./cds-containers
+          dockerfile: cds-containers/tools/Dockerfile
+          platforms: linux/amd64
+          push: "true"
+          prepare-attestation: "true"
+          security-scan-enabled: "false"
+          cache-scope: spdx-attestation-canary-tools-amd64
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run pre-commit checks
-        uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
-
-      - name: Test release candidate resolution
-        run: .github/actions/resolve-release-candidate/test.sh
-
-      - name: Test CDS release tag guard
-        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
-
-      - name: Test image evidence and publication gates
-        run: node --test .github/scripts/tests/image-attestation.test.cjs
-
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - name: Build public NGC base without inherited credentials
-        run: .github/actions/docker-build/tests/anonymous-build.sh
-
-      - name: Resolve release candidate with default settings
-        id: default-rc
-        uses: ./.github/actions/resolve-release-candidate
-        with:
-          new-release-published: "true"
-          new-release-version: "1.2.3-rc.4"
-          new-release-git-tag: "v1.2.3-rc.4"
-
-      - name: Resolve release candidate with custom settings
-        id: custom-rc
-        uses: ./.github/actions/resolve-release-candidate
-        with:
-          new-release-published: "true"
-          new-release-version: "2.0.0-preview.1"
-          new-release-git-tag: "release/2.0.0-preview.1"
-          prerelease-identifier: "preview"
-          tag-prefix: "release/"
-
-      - name: Verify release candidate action outputs
+      - name: Smoke-test the exact published digest before attesting
+        id: smoke
         env:
-          DEFAULT_SHOULD_PUBLISH: ${{ steps.default-rc.outputs.should-publish }}
-          DEFAULT_VERSION: ${{ steps.default-rc.outputs.version }}
-          DEFAULT_TAG: ${{ steps.default-rc.outputs.tag }}
-          DEFAULT_REUSED_EXISTING_TAG: ${{ steps.default-rc.outputs.reused-existing-tag }}
-          CUSTOM_SHOULD_PUBLISH: ${{ steps.custom-rc.outputs.should-publish }}
-          CUSTOM_VERSION: ${{ steps.custom-rc.outputs.version }}
-          CUSTOM_TAG: ${{ steps.custom-rc.outputs.tag }}
-          CUSTOM_REUSED_EXISTING_TAG: ${{ steps.custom-rc.outputs.reused-existing-tag }}
+          IMAGE: ghcr.io/dsx-ai-factory/dsx-cds-tools
+          DIGEST: ${{ steps.build.outputs.digest }}
+          CANDIDATE: ${{ steps.build.outputs.candidate }}
+          SBOM_ARTIFACT_ID: ${{ steps.build.outputs.sbom-artifact-id }}
         run: |
-          [[ "$DEFAULT_SHOULD_PUBLISH" == "true" ]]
-          [[ "$DEFAULT_VERSION" == "1.2.3-rc.4" ]]
-          [[ "$DEFAULT_TAG" == "v1.2.3-rc.4" ]]
-          [[ "$DEFAULT_REUSED_EXISTING_TAG" == "false" ]]
-          [[ "$CUSTOM_SHOULD_PUBLISH" == "true" ]]
-          [[ "$CUSTOM_VERSION" == "2.0.0-preview.1" ]]
-          [[ "$CUSTOM_TAG" == "release/2.0.0-preview.1" ]]
-          [[ "$CUSTOM_REUSED_EXISTING_TAG" == "false" ]]
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$SBOM_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$CANDIDATE" == "$IMAGE:candidate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-"* ]]
+          docker run --rm --platform linux/amd64 -i "$IMAGE@$DIGEST" sh -s -- tools \
+            < cds-containers/tests/security-runtime.sh
+          printf 'image=%s\ndigest=%s\nsbom-artifact-id=%s\n' \
+            "$IMAGE" "$DIGEST" "$SBOM_ARTIFACT_ID" >> "$GITHUB_OUTPUT"
+
+  attest-tools:
+    name: Attest and verify without promoting tags
+    needs: build-tools
+    if: >-
+      github.repository == 'dsx-ai-factory/dsx-github-actions' &&
+      github.ref == 'refs/heads/test/spdx-attestation-canary-20261024'
+    uses: ./.github/workflows/attest-image.yml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      image: ${{ needs.build-tools.outputs.image }}
+      digest: ${{ needs.build-tools.outputs.digest }}
+      platforms: linux/amd64
+      sbom_artifact_id: ${{ needs.build-tools.outputs.sbom-artifact-id }}
+      registry: ghcr.io
+      runner: linux-amd64-cpu4
+      tags: ""
+    secrets:
+      REGISTRY_USERNAME: ${{ github.actor }}
+      REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
