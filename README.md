@@ -8,7 +8,7 @@ container builds, and release logic between repositories makes fixes and policy
 updates hard to apply consistently. This project keeps that shared logic in one
 place so callers can pin a reviewed revision and configure it for their project.
 
-### Architecture and integrations
+## Architecture and integrations
 
 Composite actions in `.github/actions/` run as steps in a caller's job. Reusable
 workflows in `.github/workflows/` define jobs called through `workflow_call`.
