@@ -37,7 +37,7 @@ jobs:
           printf '{"version":"1.2.3-rc.1","commit":"fixture"}\n' > fixtures/rc-promotion-manifest.json
       - name: Upload legacy evidence
         id: legacy
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2, compatibility fixture
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4.6.2, compatibility fixture
         with:
           name: legacy-runtime-fixture-${{ github.run_id }}-${{ github.run_attempt }}
           path: fixtures/digest.json
@@ -115,7 +115,7 @@ jobs:
       - name: Test CDS release tag guard
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
 
-      - uses: dcarbone/install-yq-action@64b1b9eb28920bb1a4c13c05321df284f9a8f940 # v1.1.1
+      - uses: dcarbone/install-yq-action@4075b4dca348d74bd83f2bf82d30f25d7c54539b # v1.3.1
       - name: Install Helm for chart comparison tests
         run: .github/actions/helm-shared/scripts/install-helm.sh
       - name: Test NGC Helm publication
