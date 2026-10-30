@@ -19,6 +19,10 @@ paths:
     ignore:
       # Remove when actionlint supports the called workflow's job.workflow_sha.
       - '^property "workflow_sha" is not defined in object type \{check_run_id: number; container:'
+  .github/workflows/fern-docs-ci.yml:
+    ignore:
+      # Remove when actionlint supports the called workflow's job.workflow_sha.
+      - '^property "workflow_sha" is not defined in object type \{check_run_id: number; container:'
   .github/workflows/release-candidate.yml:
     ignore:
       # GitHub.com supports workflow identity; actionlint 1.7.12 does not yet.
