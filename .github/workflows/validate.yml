@@ -112,7 +112,7 @@ jobs:
       - name: Test release candidate resolution
         run: .github/actions/resolve-release-candidate/test.sh
 
-      - name: Test CDS release tag guard
+      - name: Test shared Python scripts
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
 
       - uses: dcarbone/install-yq-action@64b1b9eb28920bb1a4c13c05321df284f9a8f940 # v1.1.1

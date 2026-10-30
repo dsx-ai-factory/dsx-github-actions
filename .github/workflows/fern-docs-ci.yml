@@ -1,0 +1,92 @@
+# Copyright 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Fern Docs CI
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "Runner label"
+        required: false
+        default: "linux-amd64-cpu4"
+        type: string
+      node_version:
+        description: "Node.js version used to install the Fern CLI"
+        required: false
+        default: "20"
+        type: string
+      fern_cli_version:
+        description: "Fern CLI npm version"
+        required: true
+        type: string
+      docs_directory:
+        description: "Caller-relative directory containing Markdown and MDX pages"
+        required: false
+        default: "docs"
+        type: string
+      fern_working_directory:
+        description: "Caller-relative directory where fern check runs"
+        required: false
+        default: "."
+        type: string
+      link_args:
+        description: "Arguments passed to lychee"
+        required: false
+        default: "--offline --no-progress 'docs/**/*.md' 'docs/**/*.mdx'"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  fern-check:
+    name: Fern Check
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Require reusable workflow SHA
+        if: ${{ job.workflow_sha == '' }}
+        shell: bash
+        run: |
+          echo "::error::Reusable workflow SHA is unavailable"
+          exit 1
+
+      - name: Checkout shared Fern checks
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: dsx-ai-factory/dsx-github-actions
+          ref: ${{ job.workflow_sha }}
+          path: dsx-github-actions
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node_version }}
+          package-manager-cache: false
+
+      - name: Install Fern CLI
+        env:
+          FERN_CLI_VERSION: ${{ inputs.fern_cli_version }}
+        run: npm install --global "fern-api@${FERN_CLI_VERSION}"
+
+      - name: Check MDX safety
+        env:
+          DOCS_DIRECTORY: ${{ inputs.docs_directory }}
+        run: python3 dsx-github-actions/.github/scripts/check_docs_mdx.py "$DOCS_DIRECTORY"
+
+      - name: Run Fern check
+        working-directory: ${{ inputs.fern_working_directory }}
+        run: fern check
+
+      - name: Check links
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2
+        with:
+          args: ${{ inputs.link_args }}
+          fail: true

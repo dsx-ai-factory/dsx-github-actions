@@ -20,6 +20,42 @@ Product repositories pinned to an older shared-actions SHA need a pin update.
 Rebuild their artifacts with the patched toolchain; existing binaries do not
 change when the shared actions are updated.
 
+## Fern Docs CI
+
+Use [`fern-docs-ci.yml`](fern-docs-ci.yml) to run the shared Fern validation,
+MDX safety, and offline link checks. The caller owns event triggers and path
+filters; the shared workflow owns the implementation.
+
+```yaml
+name: Fern Docs CI
+
+on:
+  push:
+    branches:
+      - main
+      - "pull-request/[0-9]+"
+    paths:
+      - "docs/**"
+      - "fern/**"
+
+permissions:
+  contents: read
+
+jobs:
+  fern-check:
+    uses: dsx-ai-factory/dsx-github-actions/.github/workflows/fern-docs-ci.yml@REPLACE_WITH_REVIEWED_COMMIT_SHA
+    with:
+      runner: linux-amd64-cpu4
+      fern_cli_version: latest
+```
+
+The defaults match the current DSX Fern repositories: Node.js 20, pages under
+`docs/`, and `fern check` from the repository root. Each caller must explicitly
+select a Fern CLI version; use an exact reviewed version unless that repository
+has deliberately accepted the trade-offs of `latest`. Callers can also override
+the Fern working directory, documentation directory, and Lychee arguments. Pin
+production callers to the reviewed full commit SHA.
+
 ## Release Candidate Publish
 
 Use [`release-candidate-publish.yml`](release-candidate-publish.yml) to publish

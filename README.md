@@ -26,6 +26,7 @@ A collection of reusable GitHub Actions for standardizing CI/CD workflows across
 
 | Workflow                                                                 | Description                                           | Use Case                                |
 | ------------------------------------------------------------------------ | ----------------------------------------------------- | --------------------------------------- |
+| [fern-docs-ci](.github/workflows/fern-docs-ci.yml) | Validate Fern configuration, MDX safety, and offline links | Share documentation CI across repos |
 | [promote-image](.github/workflows/promote-image.yml) | Re-tag and re-publish multi-arch images via `skopeo` | Promote OCI images across registries |
 | [promote-rc](.github/workflows/promote-rc.yml) | Opt-in environment-gated promotion of verified RC artifacts | Stable tags without rebuilding QA-tested images |
 | [docker-build](.github/workflows/docker-build.yml) | Reusable workflow wrapper for Docker build/push | Share Docker build logic across repos |
