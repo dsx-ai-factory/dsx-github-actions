@@ -10,6 +10,19 @@ on:
         description: Exact verified RC version without the v prefix
         required: true
         type: string
+    secrets:
+      RC_PROMOTION_APP_PRIVATE_KEY:
+        description: GitHub App private key from stable-release (app mode)
+        required: false
+      RC_PROMOTION_PAT:
+        description: Temporary release token from stable-release (pat mode)
+        required: false
+      RC_PROMOTION_SOURCE_NGC_KEY:
+        description: Source registry read key from stable-release
+        required: true
+      RC_PROMOTION_DESTINATION_NGC_KEY:
+        description: Destination registry read and publish key from stable-release
+        required: true
 
 permissions:
   contents: read
@@ -54,6 +67,41 @@ jobs:
       actions: read
       deployments: read
     steps:
+      - name: Select release authentication
+        id: release-auth
+        env:
+          AUTH_MODE: ${{ vars.RC_PROMOTION_AUTH_MODE || 'app' }}
+        run: |
+          set -euo pipefail
+          case "$AUTH_MODE" in
+            app|pat) echo "mode=$AUTH_MODE" >> "$GITHUB_OUTPUT" ;;
+            *) echo "RC_PROMOTION_AUTH_MODE must be app or pat" >&2; exit 1 ;;
+          esac
+      - name: Check selected promotion credentials
+        env:
+          AUTH_MODE: ${{ steps.release-auth.outputs.mode }}
+          RC_PROMOTION_APP_ID: ${{ vars.RC_PROMOTION_APP_ID }}
+          RC_PROMOTION_APP_PRIVATE_KEY: ${{ steps.release-auth.outputs.mode == 'app' && secrets.RC_PROMOTION_APP_PRIVATE_KEY || '' }}
+          RC_PROMOTION_PAT: ${{ steps.release-auth.outputs.mode == 'pat' && secrets.RC_PROMOTION_PAT || '' }}
+          RC_PROMOTION_SOURCE_NGC_KEY: ${{ secrets.RC_PROMOTION_SOURCE_NGC_KEY }}
+          RC_PROMOTION_DESTINATION_NGC_KEY: ${{ secrets.RC_PROMOTION_DESTINATION_NGC_KEY }}
+        run: |
+          set +x
+          set -euo pipefail
+          required=(RC_PROMOTION_SOURCE_NGC_KEY RC_PROMOTION_DESTINATION_NGC_KEY)
+          case "$AUTH_MODE" in
+            app) required+=(RC_PROMOTION_APP_ID RC_PROMOTION_APP_PRIVATE_KEY) ;;
+            pat) required+=(RC_PROMOTION_PAT) ;;
+            *) echo "RC_PROMOTION_AUTH_MODE must be app or pat" >&2; exit 1 ;;
+          esac
+          missing=false
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing $name. Check stable-release settings and the caller's explicit secret mappings." >&2
+              missing=true
+            fi
+          done
+          [[ "$missing" == false ]]
       - name: Select temporary registry credential paths
         run: |
           {
@@ -89,6 +137,7 @@ jobs:
           bash dsx-promotion-tools/.github/actions/helm-shared/scripts/install-ngc.sh
       - name: Create the repository-scoped release token
         id: release-token
+        if: steps.release-auth.outputs.mode == 'app'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.RC_PROMOTION_APP_ID }}
@@ -102,12 +151,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RC_PROMOTION_GITHUB_TOKEN: ${{ steps.release-token.outputs.token }}
+          RC_PROMOTION_AUTH_MODE: ${{ steps.release-auth.outputs.mode }}
+          RC_PROMOTION_PAT: ${{ steps.release-auth.outputs.mode == 'pat' && secrets.RC_PROMOTION_PAT || '' }}
           RC_VERSION: ${{ inputs.rc_version }}
           DSX_RELEASE_MODE: ${{ needs.admission.outputs.release-mode }}
           RC_PROMOTION_SOURCE_NGC_KEY: ${{ secrets.RC_PROMOTION_SOURCE_NGC_KEY }}
           RC_PROMOTION_DESTINATION_NGC_KEY: ${{ secrets.RC_PROMOTION_DESTINATION_NGC_KEY }}
         run: |
           set +x
+          if [[ "$RC_PROMOTION_AUTH_MODE" == pat ]]; then
+            export RC_PROMOTION_GITHUB_TOKEN="$RC_PROMOTION_PAT"
+          fi
+          unset RC_PROMOTION_PAT
           python3 dsx-promotion-tools/.github/actions/promote-rc/promotion.py promote \
             --policy promotion-source/.github/rc-promotion.json
       - name: Preserve the promotion result

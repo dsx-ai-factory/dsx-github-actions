@@ -11,18 +11,18 @@ Container images for CDS tooling, optimized for GitHub Actions workflows. These 
 ### 1. `cds-tools` - CDS Tools Container
 Comprehensive tooling for infrastructure automation, CI/CD, and Kubernetes operations.
 
-**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-tools:0.1.1`
+**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-tools:0.2.1`
 
 **Includes**:
 - **Bazel** (multiple versions):
   - `bazel6` - Bazel 6.5.0 (for KubeVirt compatibility)
-  - `bazel8` - Bazel 8.4.0 (latest stable)
+  - `bazel8` - Bazel 8.8.2
   - `bazel` - Default symlink (→ bazel8)
 - **Kubernetes**: kubectl, kubelogin, helm
 - **Infrastructure**: terraform, terragrunt
 - **NVIDIA**: NGC CLI
 - **Container tools**: docker CLI, regctl
-- **Dev tools**: Node.js 24.22.1, Python 3, git, make, jq, yq, uv (Python package manager)
+- **Dev tools**: Node.js 24.22.1, Python 3, git, make, jq, yq, uv 0.13.5 (Python package manager)
 
 **Size**: ~500MB
 
@@ -30,7 +30,7 @@ Comprehensive tooling for infrastructure automation, CI/CD, and Kubernetes opera
 Lightweight Go 1.26.10 development environment with essential tooling. The `1.24`
 image name is retained for compatibility; it no longer identifies the toolchain version.
 
-**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:0.1.1`
+**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:0.2.1`
 
 **Includes**:
 - Go 1.26.10 (Alpine-based)
@@ -48,7 +48,7 @@ image name is retained for compatibility; it no longer identifies the toolchain 
 Full-featured Go 1.26.10 environment with better C library compatibility. The public
 image name is unchanged.
 
-**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-debian:0.1.1`
+**Image**: `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-debian:0.2.1`
 
 **Size**: ~300MB+
 
@@ -71,7 +71,7 @@ jobs:
       packages: read  # Required to pull from GHCR
 
     container:
-      image: ghcr.io/dsx-ai-factory/dsx-cds-tools:0.1.1
+      image: ghcr.io/dsx-ai-factory/dsx-cds-tools:0.2.1
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -111,14 +111,14 @@ jobs:
           docker run --rm \
             -v $PWD:/workspace \
             -w /workspace \
-            ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:0.1.1 \
+            ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:0.2.1 \
             go build ./...
 ```
 
 ### Method 3: Building Custom Image Based on CDS Containers
 
 ```dockerfile
-FROM ghcr.io/dsx-ai-factory/dsx-cds-tools:0.1.1
+FROM ghcr.io/dsx-ai-factory/dsx-cds-tools:0.2.1
 
 # Add your custom tools
 RUN apt-get update && apt-get install -y \
@@ -151,7 +151,7 @@ WORKDIR /app
 ## 🏗️ Versioning and Updates
 
 ### Current Version
-The current version is defined in [`VERSION`](./VERSION): **0.1.1**
+The current version is defined in [`VERSION`](./VERSION): **0.2.1**
 
 This file contains only the semantic version number (e.g., `0.0.1`).
 
@@ -182,11 +182,22 @@ All images refresh distro-managed CA stores with patched package minimums:
 `20250419+deb13u1`, and [Ubuntu](https://ubuntu.com/security/notices/USN-8944-1)
 `20260816ubuntu0.22.04.1`. No custom root blocklist or TLS bypass is used.
 
-The first `0.1.0` publication stopped before release tags because the tools
-SPDX report exceeded GitHub's 16 MiB attestation limit. `0.1.1` retries with
+### SPDX Attestation Limit Fix (0.2.1)
+
+The tools SPDX report exceeded GitHub's 16 MiB attestation limit. `0.2.1` retries with
 shorter document-local file IDs while retaining every package, file, checksum,
 license, and relationship. The original report and inverse ID map remain in the
 evidence artifact. Container contents and tool versions are unchanged by this fix.
+
+### Tools CA Trust Update (0.2.0)
+
+The tools image updates uv to 0.13.5, system Python pip to 26.2.2, and certifi to
+2026.10.23. Upgrading uv alone does not update Ubuntu's Python packages.
+Bazel 8.8.2 (`bazel8`, still the default) includes a fixed Java trust store.
+The retained Bazel 6.5.0 needs a trust-store workaround: `ca-certificates-java`
+supplies updated certificates, and the system bazelrc directs both Bazel JVMs to
+that store. Keep this override while Bazel 6 is bundled.
+NGC CLI's independently bundled trust stores remain a separate follow-up.
 
 ### Updating Containers
 
@@ -304,8 +315,8 @@ git push
 
 | GitLab Registry | GitHub GHCR |
 |-----------------|-------------|
-| `registry.gitlab-master.nvidia.com/cds/cds-containers/tools:latest` | `ghcr.io/dsx-ai-factory/dsx-cds-tools:0.1.0` |
-| `registry.gitlab-master.nvidia.com/cds/cds-containers/go-dev-1.24-alpine:1.0.0` | `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:0.1.0` |
+| `registry.gitlab-master.nvidia.com/cds/cds-containers/tools:latest` | `ghcr.io/dsx-ai-factory/dsx-cds-tools:0.2.0` |
+| `registry.gitlab-master.nvidia.com/cds/cds-containers/go-dev-1.24-alpine:1.0.0` | `ghcr.io/dsx-ai-factory/dsx-cds-go-dev-1.24-alpine:0.2.0` |
 
 ### Key Differences
 
@@ -331,11 +342,11 @@ steps:
   - name: Build with Bazel 6
     run: bazel6 build //...
 
-  # Use Bazel 8.4.0 explicitly
+  # Use Bazel 8.8.2 explicitly
   - name: Build with Bazel 8
     run: bazel8 build //...
 
-  # Use default (currently Bazel 8.4.0)
+  # Use default (currently Bazel 8.8.2)
   - name: Build with default Bazel
     run: bazel build //...
 ```
@@ -348,7 +359,7 @@ If your Makefile uses `bazel` commands directly, override the default:
 jobs:
   build:
     container:
-      image: ghcr.io/dsx-ai-factory/dsx-cds-tools:0.1.0
+      image: ghcr.io/dsx-ai-factory/dsx-cds-tools:0.2.0
 
     steps:
       - name: Override bazel to use version 6.5.0

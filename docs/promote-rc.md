@@ -6,8 +6,9 @@ It does not build images or resolve chart dependencies.
 
 ## Product configuration
 
-Add this caller to the product's protected default branch. Pin both shared
-workflows to the same reviewed full commit SHA.
+Add this caller to the product's protected default branch. Pin each shared
+workflow to a reviewed full commit SHA. A compatible promoter update can use
+a newer revision without rebuilding the selected RC.
 
 ```yaml
 name: Promote RC
@@ -29,10 +30,18 @@ jobs:
       deployments: read
     with:
       rc_version: ${{ inputs.rc_version }}
+    secrets:
+      RC_PROMOTION_APP_PRIVATE_KEY: ${{ secrets.RC_PROMOTION_APP_PRIVATE_KEY }}
+      RC_PROMOTION_SOURCE_NGC_KEY: ${{ secrets.RC_PROMOTION_SOURCE_NGC_KEY }}
+      RC_PROMOTION_DESTINATION_NGC_KEY: ${{ secrets.RC_PROMOTION_DESTINATION_NGC_KEY }}
 ```
 
-Do not pass secrets, add `secrets: inherit`, or add concurrency to this caller.
-The shared workflow owns the publishing environment and stable-release lock.
+Keep these secrets only in `stable-release`. GitHub requires the caller to
+[forward environment secrets explicitly](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#using-inputs-and-secrets-in-a-reusable-workflow),
+even when they exist only in that environment. The shared job receives them after
+approval and checks for missing values before installing tools.
+Do not use `secrets: inherit` or add caller concurrency. The shared workflow owns
+the publishing environment and stable-release lock.
 
 Add `.github/rc-promotion.json` on the protected default branch. Keep `enabled`
 false until the rollout review.
@@ -66,8 +75,8 @@ destination, even for disabled templates or values embedded in strings.
 Missing repositories and other version-value mapping shapes are unsupported and
 rejected before any publishing.
 
-Set `source_publisher_sha` to the reviewed full commit SHA pinned by the product's
-RC caller. The selected Actions attempt must reference
+Set `source_publisher_sha` to the approved full commit SHA used to publish the
+selected RC. Keep this value when updating only the promoter. The selected Actions attempt must reference
 `dsx-ai-factory/dsx-github-actions/.github/workflows/release-candidate-publish.yml`
 at exactly that immutable SHA. Missing provenance, mutable refs, different
 repositories, and different publisher revisions are rejected. The helper fetches
@@ -124,12 +133,15 @@ Before activation, repository administrators must configure:
 - Environment-only secrets `RC_PROMOTION_SOURCE_NGC_KEY` and
   `RC_PROMOTION_DESTINATION_NGC_KEY`. Use source read and destination publish
   permissions. Do not create repository or organization secrets with these names.
+  Reads select credentials by source or destination role, even when the NGC paths
+  are identical. The destination key must also read destination images and charts
+  for conflict detection and post-publication verification.
 - A GitHub App installed only on the product repository with Contents and
   Workflows write permissions. In `stable-release`, set variable
   `RC_PROMOTION_APP_ID` and secret `RC_PROMOTION_APP_PRIVATE_KEY`; do not place
   that private key in repository or organization secrets. The pinned official
   token action requests only those permissions for the current repository and
-  revokes its short-lived installation token when the job ends. No PAT fallback.
+  revokes its short-lived installation token when the job ends.
 - Existing destination chart repositories, immutable stable-version policy, and
   registry access from the runner. Promotion does not create chart repositories
   or modify registry permissions.
@@ -140,12 +152,25 @@ Before activation, repository administrators must configure:
 GitHub requires Workflows write permission when a release's target commit changes
 workflow files relative to the default branch; `GITHUB_TOKEN` cannot receive that
 permission ([GitHub release API](https://docs.github.com/en/rest/releases/releases#create-a-release)).
-The App token is used only for release/ref writes, release-asset uploads, and
+The release token is used only for release/ref writes, release-asset uploads, and
 destination draft-release/intent reads needed for retries. GitHub limits draft
 release visibility to push-capable identities. Source evidence, protection checks,
 and checkout keep the normal read-only workflow token. The App token is not passed
 to registry tools or checked-out product code; no RC code is executed by promotion.
-Missing App credentials stop before writes.
+Missing selected credentials stop before writes.
+
+For a temporary PAT setup, set environment variable `RC_PROMOTION_AUTH_MODE` to
+`pat` and environment secret `RC_PROMOTION_PAT`. Replace the App private-key
+mapping in the caller with `RC_PROMOTION_PAT: ${{ secrets.RC_PROMOTION_PAT }}`.
+Use an expiring, repository-scoped
+PAT with Contents and Workflows write permissions. The approval gate stays the
+same. This mode must be selected explicitly; failed App authentication never
+falls back to a PAT. Only the selected credential is used for release writes.
+Do not place the PAT in repository or organization secrets. To return to App
+authentication, configure the App credentials and caller mapping, set the mode to
+`app`, and remove the PAT secret. Revoke a dedicated temporary PAT when it is no
+longer needed.
+Unset mode defaults to `app`; any other mode is rejected.
 
 One repository variable, `DSX_RELEASE_MODE`, coordinates the cutover. Unset or
 any value other than `rc-promotion` preserves legacy publishing. Every job in an

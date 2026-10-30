@@ -292,6 +292,11 @@ helm_ngc_push() {
     export NGC_CLI_ORG="${ngc_org:-no-org}"
     export NGC_CLI_TEAM="${ngc_team:-no-team}"
 
+    if [[ "${CC_HELM_NGC_DUPLICATE}" == "verify" ]]; then
+      bash "$(dirname "${BASH_SOURCE[0]}")/push-verified.sh"
+      return
+    fi
+
     ngc config current
 
     if ngc registry chart info "${CC_HELM_NGC_PATH}/${CC_HELM_CHART_NAME}" >/dev/null 2>&1; then
@@ -334,7 +339,13 @@ helm_ngc_push() {
     fi
 
     echo "CC_HELM_NGC_PUSH_STATUS=$push_status" >> "$GITHUB_ENV"
+    # GITHUB_ENV reaches later steps; the current step needs the exit status.
+    [[ "$push_status" != "failed" ]]
   fi
+}
+
+helm_ngc_push_with_retries() {
+  "$(dirname "${BASH_SOURCE[0]}")/helm-ngc-push-with-retries.sh" "$@"
 }
 
 helm_check_push_errors() {

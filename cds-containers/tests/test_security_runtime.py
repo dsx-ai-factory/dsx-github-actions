@@ -73,7 +73,7 @@ class ContainerSecurityPolicyTests(unittest.TestCase):
         self.assertNotIn("apk version -t", script)
 
     def test_immutable_release_version(self):
-        self.assertEqual((CONTAINERS / "VERSION").read_text(), "0.1.1\n")
+        self.assertEqual((CONTAINERS / "VERSION").read_text(), "0.2.1\n")
 
     def test_smoke_script_syntax_and_usage(self):
         subprocess.run(["sh", "-n", str(SMOKE)], check=True)

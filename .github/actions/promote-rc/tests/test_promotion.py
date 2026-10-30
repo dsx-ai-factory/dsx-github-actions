@@ -120,8 +120,11 @@ class MemoryRegistry:
         self.fail_chart = False
         self.bad_copy = False
         self.fail_read = False
+        self.reads = []
 
-    def image_digest(self, namespace, name, version, absent=False):
+    def image_digest(self, role, name, version, absent=False):
+        p.require(role == ("source" if version == RC else "destination"), "wrong image read role")
+        self.reads.append(("image", role))
         if self.fail_read:
             raise p.PromotionError("registry unavailable")
         if version == RC:
@@ -138,7 +141,9 @@ class MemoryRegistry:
         self.writes.append(("image", name, digest, stable))
         self.images[name, stable] = "sha256:" + "c" * 64 if self.bad_copy else digest
 
-    def chart(self, namespace, name, version, absent=False):
+    def chart(self, role, name, version, absent=False):
+        p.require(role == ("source" if version == RC else "destination"), "wrong chart read role")
+        self.reads.append(("chart", role))
         if version == RC:
             return self.source_chart
         value = self.charts.get((name, version))
@@ -545,6 +550,36 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(self.promote("23-2")["intent"], first["intent"])
         self.assertEqual(len(self.registry.writes), 2)
 
+    def test_preflight_and_verification_reads_use_explicit_roles(self):
+        expected = [
+            ("image", "source"), ("image", "destination"),
+            ("chart", "source"), ("chart", "destination"),
+            ("image", "destination"), ("image", "destination"),
+            ("chart", "destination"), ("chart", "destination"),
+        ]
+        self.promote()
+        self.assertEqual(self.registry.reads, expected)
+        self.registry.reads.clear()
+        self.promote("23-2")
+        self.assertEqual(self.registry.reads, expected)
+
+    def test_destination_read_failure_stops_before_any_write(self):
+        for method in ("image_digest", "chart"):
+            with self.subTest(method=method):
+                self.setUp()
+                original = getattr(self.registry, method)
+
+                def read(role, *args, **kwargs):
+                    if role == "destination":
+                        raise p.PromotionError("destination read denied")
+                    return original(role, *args, **kwargs)
+
+                with patch.object(self.registry, method, side_effect=read):
+                    with self.assertRaisesRegex(p.PromotionError, "destination read denied"):
+                        self.promote()
+                self.assertIsNone(self.github.reservation)
+                self.assertEqual(self.registry.writes, [])
+
     def test_cross_namespace_charts_fail_before_any_io(self):
         candidate = config()
         candidate["destination_ngc_path"] = "example/components"
@@ -669,6 +704,7 @@ class CaptureTests(unittest.TestCase):
         registry = MemoryRegistry(data)
         self.assertEqual(p.capture(config(), registry, context), expected)
         self.assertEqual(registry.writes, [])
+        self.assertEqual(registry.reads, [("image", "source"), ("chart", "source")])
 
     def test_changed_chart_metadata_prevents_capture(self):
         context = {
@@ -774,6 +810,56 @@ class GateTests(unittest.TestCase):
 
 
 class ToolTests(unittest.TestCase):
+    def test_image_reads_select_explicit_role_with_distinct_credentials(self):
+        source = "example/components-dev"
+        env = {"SOURCE_DOCKER_CONFIG": "/tmp/source-auth",
+               "DESTINATION_DOCKER_CONFIG": "/tmp/destination-auth"}
+        for destination in (source, "example/components"):
+            registry = p.Registry(source, destination)
+            for role, namespace in (("source", source), ("destination", destination)):
+                with self.subTest(destination=destination, role=role), \
+                        patch.dict(os.environ, env), patch.object(p, "command", side_effect=[
+                            b'{"schemaVersion":2}', p.canonical({"digest": IMAGE}),
+                        ]) as command:
+                    self.assertEqual(registry.image_digest(role, "service", RC), IMAGE)
+                    self.assertEqual(command.call_count, 2)
+                    for call in command.call_args_list:
+                        self.assertEqual(call.args[0][-1], f"nvcr.io/{namespace}/service:{RC}")
+                        self.assertEqual(call.kwargs["env"]["DOCKER_CONFIG"],
+                                         env[f"{role.upper()}_DOCKER_CONFIG"])
+            with patch.dict(os.environ, env), patch.object(p, "command") as command:
+                registry.verify_image("service", IMAGE, COMMIT)
+                self.assertEqual(command.call_args.kwargs["env"]["DOCKER_CONFIG"],
+                                 env["SOURCE_DOCKER_CONFIG"])
+
+    def test_chart_reads_select_explicit_role_with_equal_namespaces(self):
+        registry = p.Registry("example/components-dev", "example/components-dev")
+        payload = b"verified chart bytes"
+        for role in ("source", "destination"):
+            alias = f"promotion-{role}"
+
+            def response(args, **kwargs):
+                if args[:3] == ["helm", "repo", "update"]:
+                    self.assertEqual(args[3], alias)
+                    return b""
+                if args[:3] == ["helm", "search", "repo"]:
+                    self.assertEqual(args[3], f"{alias}/service")
+                    return p.canonical([{"name": f"{alias}/service", "version": RC}])
+                self.assertEqual(args[:3], ["helm", "pull", f"{alias}/service"])
+                (Path(args[-1]) / f"service-{RC}.tgz").write_bytes(payload)
+                return b""
+
+            with self.subTest(role=role), patch.object(p, "command", side_effect=response):
+                self.assertEqual(registry.chart(role, "service", RC), payload)
+
+    def test_registry_reads_reject_unknown_roles_before_io(self):
+        registry = p.Registry("example/components-dev")
+        with patch.object(p, "command") as command:
+            for operation in (registry.image_digest, registry.chart):
+                with self.subTest(operation=operation.__name__), self.assertRaises(p.PromotionError):
+                    operation("example/components-dev", "service", RC)
+            command.assert_not_called()
+
     def test_registry_authentication_writes_private_docker_credentials(self):
         for capture_only in (True, False):
             with self.subTest(capture_only=capture_only), tempfile.TemporaryDirectory() as directory:
@@ -785,8 +871,17 @@ class ToolTests(unittest.TestCase):
                 if not capture_only:
                     env["RC_PROMOTION_DESTINATION_NGC_KEY"] = "destination-test-key"
                     credentials["DESTINATION"] = "destination-test-key"
-                with patch.dict(os.environ, env, clear=True), patch.object(p, "command"):
+                with patch.dict(os.environ, env, clear=True), patch.object(p, "command") as command:
                     p.authenticate_registries(config(), capture_only=capture_only)
+                    if not capture_only:
+                        self.assertEqual(command.call_count, 2)
+                        for call, role in zip(command.call_args_list, ("SOURCE", "DESTINATION")):
+                            self.assertEqual(call.args[0], [
+                                "helm", "repo", "add", f"promotion-{role.lower()}",
+                                "https://helm.ngc.nvidia.com/example/components-dev",
+                                "--username", "$oauthtoken", "--password-stdin",
+                            ])
+                            self.assertEqual(call.kwargs["data"], (credentials[role] + "\n").encode())
                     for label, key in credentials.items():
                         path = Path(directory) / label.lower() / "config.json"
                         self.assertEqual(os.environ[f"{label}_DOCKER_CONFIG"], str(path.parent))
@@ -819,10 +914,10 @@ class ToolTests(unittest.TestCase):
                 result = subprocess.CompletedProcess([], 1, b"", message.encode())
                 with patch("subprocess.run", return_value=result), self.subTest(message=message):
                     if absent:
-                        self.assertIsNone(registry.image_digest("example/components", "service", "1.2.3", True))
+                        self.assertIsNone(registry.image_digest("destination", "service", "1.2.3", True))
                     else:
                         with self.assertRaises(p.PromotionError):
-                            registry.image_digest("example/components", "service", "1.2.3", True)
+                            registry.image_digest("destination", "service", "1.2.3", True)
 
     def test_registry_digest_uses_descriptor_not_display_newline(self):
         with patch.dict(os.environ, {"SOURCE_DOCKER_CONFIG": "/tmp/no-credentials"}):
@@ -832,12 +927,12 @@ class ToolTests(unittest.TestCase):
             ]
             with patch("subprocess.run", side_effect=outputs):
                 self.assertEqual(p.Registry("example/components-dev").image_digest(
-                    "example/components-dev", "service", RC), IMAGE)
+                    "source", "service", RC), IMAGE)
 
     def test_warning_is_not_absence(self):
         result = subprocess.CompletedProcess([], 0, b"[]", b"cannot load index")
         with patch("subprocess.run", return_value=result), self.assertRaises(p.PromotionError):
-            p.Registry("example/components-dev").chart("example/components-dev", "service", RC, True)
+            p.Registry("example/components-dev").chart("source", "service", RC, True)
 
 
 if __name__ == "__main__":

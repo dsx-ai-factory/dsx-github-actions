@@ -14,8 +14,11 @@ from test_promotion import COMMIT, PUBLISHER_SHA, RC, archive, charts, config, e
 
 
 class AuthenticationTests(unittest.TestCase):
+    write_token = "test-app-token"
+    auth_mode = "app"
+
     def setUp(self):
-        self.github = p.GitHub("example/product", write_token="test-app-token")
+        self.github = p.GitHub("example/product", write_token=self.write_token)
 
     def test_source_and_protection_reads_keep_the_normal_workflow_token(self):
         with patch.dict(os.environ, {"GH_TOKEN": "test-workflow-token"}, clear=True), \
@@ -27,17 +30,17 @@ class AuthenticationTests(unittest.TestCase):
                     self.assertIsNone(command.call_args.kwargs["env"])
             self.assertEqual(os.environ["GH_TOKEN"], "test-workflow-token")
 
-    def test_destination_draft_and_intent_reads_keep_app_visibility_for_retries(self):
+    def test_destination_draft_and_intent_reads_keep_write_token_visibility_for_retries(self):
         with patch.object(p, "command", return_value=b"{}") as command:
             for path in ("releases?per_page=100&page=1", "releases/1", "releases/1/assets?page=1"):
                 with self.subTest(path=path):
                     self.github.request(f"repos/example/product/{path}")
-                    self.assertEqual(command.call_args.kwargs["env"]["GH_TOKEN"], "test-app-token")
+                    self.assertEqual(command.call_args.kwargs["env"]["GH_TOKEN"], self.write_token)
             self.github.pages = Mock(return_value=[{"name": "intent.json", "id": 2, "size": 2}])
             self.github.read_asset({"id": 1}, "intent.json")
-            self.assertEqual(command.call_args.kwargs["env"]["GH_TOKEN"], "test-app-token")
+            self.assertEqual(command.call_args.kwargs["env"]["GH_TOKEN"], self.write_token)
 
-    def test_existing_draft_reservation_is_reused_with_app_authenticated_reads(self):
+    def test_existing_draft_reservation_is_reused_with_write_authenticated_reads(self):
         intent = {"rc_version": RC, "commit": COMMIT}
         draft = {
             "id": 1, "tag_name": "v1.2.3", "prerelease": False, "draft": True,
@@ -47,7 +50,7 @@ class AuthenticationTests(unittest.TestCase):
 
         def response(args, data=None, **kwargs):
             self.assertIsNone(data)
-            self.assertEqual(kwargs["env"]["GH_TOKEN"], "test-app-token")
+            self.assertEqual(kwargs["env"]["GH_TOKEN"], self.write_token)
             if "Accept: application/octet-stream" in args:
                 return p.canonical(intent)
             self.assertEqual(args[args.index("--method") + 1], "GET")
@@ -60,32 +63,33 @@ class AuthenticationTests(unittest.TestCase):
             self.assertEqual(self.github.reserve("1.2.3", COMMIT, intent), draft)
             self.assertEqual(command.call_count, 3)
 
-    def test_only_release_ref_and_asset_writes_receive_the_app_token(self):
+    def test_only_release_ref_and_asset_writes_receive_the_write_token(self):
         with patch.dict(os.environ, {"GH_TOKEN": "test-workflow-token"}, clear=True), \
                 patch.object(p, "command", return_value=b"{}") as command:
             for path, method in [("releases", "POST"), ("releases/1", "PATCH"),
                                  ("git/refs", "POST")]:
                 with self.subTest(path=path):
                     self.github.request(f"repos/example/product/{path}", method, {})
-                    self.assertEqual(command.call_args.kwargs["env"]["GH_TOKEN"], "test-app-token")
-                    self.assertNotIn("test-app-token", str(command.call_args.args))
+                    self.assertEqual(command.call_args.kwargs["env"]["GH_TOKEN"], self.write_token)
+                    self.assertNotIn(self.write_token, str(command.call_args.args))
             self.github.upload({"tag_name": "v1.2.3"}, "intent.json", {})
-            self.assertEqual(command.call_args.kwargs["env"]["GH_TOKEN"], "test-app-token")
-            self.assertNotIn("test-app-token", str(command.call_args.args))
+            self.assertEqual(command.call_args.kwargs["env"]["GH_TOKEN"], self.write_token)
+            self.assertNotIn(self.write_token, str(command.call_args.args))
             self.assertEqual(os.environ["GH_TOKEN"], "test-workflow-token")
 
-    def test_missing_app_token_never_falls_back_to_normal_or_pat_credentials(self):
-        env = {"GH_TOKEN": "test-workflow-token", "GITHUB_TOKEN": "test-other-token"}
+    def test_missing_write_token_never_falls_back_to_ambient_credentials(self):
+        env = {"GH_TOKEN": "test-workflow-token", "GITHUB_TOKEN": "test-other-token",
+               "RC_PROMOTION_AUTH_MODE": self.auth_mode, "RC_PROMOTION_PAT": "test-unselected-pat"}
         with patch.dict(os.environ, env, clear=True), patch.object(p, "command") as command:
             for token in (None, "", " "):
                 github = p.GitHub("example/product", write_token=token)
                 for path, method in [("releases", "POST"), ("releases/1", "PATCH"),
                                      ("git/refs", "POST")]:
                     with self.subTest(token=token, path=path), self.assertRaisesRegex(
-                        p.PromotionError, "App release token is missing"
+                        p.PromotionError, "^the environment-scoped release token is missing$"
                     ):
                         github.request(f"repos/example/product/{path}", method, {})
-                with self.assertRaisesRegex(p.PromotionError, "App release token is missing"):
+                with self.assertRaisesRegex(p.PromotionError, "^the environment-scoped release token is missing$"):
                     github.upload({"tag_name": "v1.2.3"}, "intent.json", {})
             command.assert_not_called()
 
@@ -99,25 +103,29 @@ class AuthenticationTests(unittest.TestCase):
                     self.github.request(path, method, {})
             command.assert_not_called()
 
-    def test_missing_app_token_stops_main_before_evidence_or_registry_access(self):
+    def test_missing_selected_token_stops_main_before_evidence_or_registry_access(self):
         env = {"DSX_RELEASE_MODE": "rc-promotion", "GITHUB_REPOSITORY": "example/product",
-               "GH_TOKEN": "test-workflow-token"}
+               "GH_TOKEN": "test-workflow-token", "GITHUB_TOKEN": "test-other-token",
+               "RC_PROMOTION_AUTH_MODE": self.auth_mode, "RC_PROMOTION_GITHUB_TOKEN": ""}
         with patch.dict(os.environ, env, clear=True), \
                 patch("sys.argv", ["promotion.py", "promote"]), \
                 patch.object(Path, "read_text", return_value=json.dumps(config())), \
                 patch.object(p.GitHub, "gates") as gates, \
+                patch.object(p.GitHub, "evidence") as evidence, \
                 patch.object(p, "authenticate_registries") as auth, \
                 patch.object(p, "command") as command:
-            with self.assertRaisesRegex(p.PromotionError, "App release token is missing"):
+            with self.assertRaisesRegex(p.PromotionError, "^the environment-scoped release token is missing$"):
                 p.main()
             gates.assert_not_called()
+            evidence.assert_not_called()
             auth.assert_not_called()
             command.assert_not_called()
 
-    def test_main_does_not_leak_app_token_to_read_or_registry_tool_environment(self):
+    def test_main_does_not_leak_write_token_to_read_or_registry_tool_environment(self):
         env = {
             "DSX_RELEASE_MODE": "rc-promotion", "GITHUB_REPOSITORY": "example/product",
-            "GH_TOKEN": "test-workflow-token", "RC_PROMOTION_GITHUB_TOKEN": "test-app-token",
+            "GH_TOKEN": "test-workflow-token", "RC_PROMOTION_GITHUB_TOKEN": self.write_token,
+            "RC_PROMOTION_AUTH_MODE": self.auth_mode,
             "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
             "GITHUB_SHA": COMMIT, "GITHUB_REF_PROTECTED": "true", "RC_VERSION": RC,
             "GITHUB_RUN_ID": "12", "GITHUB_RUN_ATTEMPT": "1",
@@ -125,6 +133,7 @@ class AuthenticationTests(unittest.TestCase):
 
         def check_environment(*args):
             self.assertNotIn("RC_PROMOTION_GITHUB_TOKEN", os.environ)
+            self.assertNotIn("RC_PROMOTION_PAT", os.environ)
             self.assertEqual(os.environ["GH_TOKEN"], "test-workflow-token")
 
         with patch.dict(os.environ, env, clear=True), \
@@ -136,8 +145,13 @@ class AuthenticationTests(unittest.TestCase):
                 patch.object(p, "authenticate_registries", side_effect=check_environment), \
                 patch.object(p, "promote", return_value={}) as promote:
             p.main()
-            self.assertEqual(promote.call_args.args[2].write_token, "test-app-token")
+            self.assertEqual(promote.call_args.args[2].write_token, self.write_token)
             check_environment()
+
+
+class PATAuthenticationTests(AuthenticationTests):
+    write_token = "test-pat-token"
+    auth_mode = "pat"
 
 
 class EvidenceTests(unittest.TestCase):

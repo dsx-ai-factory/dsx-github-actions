@@ -115,6 +115,12 @@ jobs:
       - name: Test CDS release tag guard
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
 
+      - uses: dcarbone/install-yq-action@64b1b9eb28920bb1a4c13c05321df284f9a8f940 # v1.1.1
+      - name: Install Helm for chart comparison tests
+        run: .github/actions/helm-shared/scripts/install-helm.sh
+      - name: Test NGC Helm publication
+        run: python3 -m unittest discover -s .github/actions/helm-shared/tests -p 'test_*.py'
+
       - name: Test image evidence and publication gates
         run: node --test .github/scripts/tests/image-attestation.test.cjs
 

@@ -155,7 +155,7 @@ class GitHub:
 
     def write_environment(self):
         require(isinstance(self.write_token, str) and bool(self.write_token.strip()),
-                "the environment-scoped GitHub App release token is missing")
+                "the environment-scoped release token is missing")
         return {**os.environ, "GH_TOKEN": self.write_token}
 
     def request(self, path, method="GET", data=None, absent=False, binary=False):
@@ -429,15 +429,18 @@ class Registry:
         self.destination = destination or source
         self.tools = Path(__file__).resolve().parent.parent / "release-artifacts"
 
-    def docker_env(self, namespace):
-        key = "SOURCE_DOCKER_CONFIG" if namespace == self.source else "DESTINATION_DOCKER_CONFIG"
+    def docker_env(self, role):
+        require(role in {"source", "destination"}, "invalid registry credential role")
+        key = f"{role.upper()}_DOCKER_CONFIG"
         return {**os.environ, "DOCKER_CONFIG": os.environ[key]}
 
-    def image_digest(self, namespace, name, tag, absent=False):
+    def image_digest(self, role, name, tag, absent=False):
+        env = self.docker_env(role)
+        namespace = getattr(self, role)
         ref = f"nvcr.io/{namespace}/{name}:{tag}"
         output = command(
             ["docker", "buildx", "imagetools", "inspect", "--raw", ref],
-            env=self.docker_env(namespace),
+            env=env,
             missing=(lambda error: error.strip().removeprefix("ERROR: ") in {
                 f"{ref}: not found", f"{ref}: manifest unknown",
                 "manifest unknown", "manifest unknown: manifest unknown",
@@ -452,7 +455,7 @@ class Registry:
         # not a hash of terminal formatting, as the immutable image identity.
         descriptor = json.loads(command(
             ["docker", "buildx", "imagetools", "inspect", "--format", "{{json .Manifest}}", ref],
-            env=self.docker_env(namespace),
+            env=env,
         ))
         require(matches(DIGEST, descriptor.get("digest")), "invalid registry manifest digest")
         return descriptor["digest"]
@@ -460,7 +463,7 @@ class Registry:
     def verify_image(self, name, digest, commit):
         command(["bash", str(self.tools / "verify-image.sh"),
                  f"nvcr.io/{self.source}/{name}@{digest}", commit],
-                env=self.docker_env(self.source))
+                env=self.docker_env("source"))
 
     def copy_image(self, name, digest, stable):
         command(["skopeo", "copy", "--all", "--preserve-digests",
@@ -469,8 +472,9 @@ class Registry:
                  f"docker://nvcr.io/{self.source}/{name}@{digest}",
                  f"docker://nvcr.io/{self.destination}/{name}:{stable}"])
 
-    def chart(self, namespace, name, version, absent=False):
-        repo = "promotion-source" if namespace == self.source else "promotion-destination"
+    def chart(self, role, name, version, absent=False):
+        require(role in {"source", "destination"}, "invalid registry credential role")
+        repo = f"promotion-{role}"
         # Refresh errors never mean "version absent".
         command(["helm", "repo", "update", repo, "--fail-on-repo-update-fail"], clean_stderr=True)
         rows = json.loads(command([
@@ -511,15 +515,14 @@ def promote(config, evidence, github, registry, attempt, report_path=None):
     chart_targets = []
     # Complete the entire source and destination preflight before reserving a release.
     for item in evidence["images"]:
-        actual = registry.image_digest(config["source_ngc_path"], item["name"], rc)
+        actual = registry.image_digest("source", item["name"], rc)
         require(actual == item["digest"], "RC image tag changed after verification")
         registry.verify_image(item["name"], actual, commit)
-        existing = registry.image_digest(config["destination_ngc_path"], item["name"],
-                                         stable, absent=True)
+        existing = registry.image_digest("destination", item["name"], stable, absent=True)
         require(existing in {None, actual}, "stable image already has a different digest")
         image_targets.append({"name": item["name"], "digest": actual})
     for item in evidence["charts"]:
-        source = registry.chart(config["source_ngc_path"], item["name"], rc)
+        source = registry.chart("source", item["name"], rc)
         require(charts.digest(source) == item["digest"], "RC chart changed after verification")
         transformed = charts.promote(source, item["name"], rc, stable, commit,
                                      item["version_value_paths"], manifest_digest,
@@ -527,8 +530,7 @@ def promote(config, evidence, github, registry, attempt, report_path=None):
                                       for image in image_targets})
         prepared[item["name"]] = transformed
         registry.chart_destination(item["name"])
-        existing = registry.chart(config["destination_ngc_path"], item["name"],
-                                  stable, absent=True)
+        existing = registry.chart("destination", item["name"], stable, absent=True)
         require(existing is None or existing == transformed,
                 "stable chart already contains different files or provenance")
         chart_targets.append({"name": item["name"], "digest": charts.digest(transformed)})
@@ -551,23 +553,21 @@ def promote(config, evidence, github, registry, attempt, report_path=None):
     save()
     try:
         for item in image_targets:
-            current = registry.image_digest(config["destination_ngc_path"], item["name"],
-                                            stable, absent=True)
+            current = registry.image_digest("destination", item["name"], stable, absent=True)
             require(current in {None, item["digest"]}, "stable image changed during promotion")
             if current is None:
                 registry.copy_image(item["name"], item["digest"], stable)
-            require(registry.image_digest(config["destination_ngc_path"], item["name"], stable)
+            require(registry.image_digest("destination", item["name"], stable)
                     == item["digest"], "copied image digest does not match the RC")
             report["artifacts"].append({"kind": "image", **item, "verified": True})
             save()
         for item in chart_targets:
-            current = registry.chart(config["destination_ngc_path"], item["name"],
-                                     stable, absent=True)
+            current = registry.chart("destination", item["name"], stable, absent=True)
             require(current is None or current == prepared[item["name"]],
                     "stable chart changed during promotion")
             if current is None:
                 registry.publish_chart(item["name"], stable, prepared[item["name"]])
-            require(registry.chart(config["destination_ngc_path"], item["name"], stable)
+            require(registry.chart("destination", item["name"], stable)
                     == prepared[item["name"]], "published chart differs from the prepared package")
             report["artifacts"].append({"kind": "chart", **item, "verified": True})
             save()
@@ -596,12 +596,12 @@ def capture(config, registry, context):
         "images": [], "charts": [],
     }
     for name in sorted(config["images"]):
-        value = registry.image_digest(config["source_ngc_path"], name, rc)
+        value = registry.image_digest("source", name, rc)
         require(matches(DIGEST, value), "invalid image digest")
         registry.verify_image(name, value, context["commit"])
         result["images"].append({"name": name, "digest": value})
     for item in sorted(config["charts"], key=lambda item: item["name"]):
-        data = registry.chart(config["source_ngc_path"], item["name"], rc)
+        data = registry.chart("source", item["name"], rc)
         charts.validate(data, item["name"], rc, context["commit"])
         result["charts"].append({**item, "digest": charts.digest(data)})
     return result
