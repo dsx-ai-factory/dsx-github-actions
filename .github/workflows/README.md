@@ -49,7 +49,7 @@ jobs:
       fern_cli_version: latest
 ```
 
-The defaults match the current DSX Fern repositories: Node.js 20, pages under
+The workflow uses the repository-required Node.js 24.22.1 runtime, pages under
 `docs/`, and `fern check` from the repository root. Each caller must explicitly
 select a Fern CLI version; use an exact reviewed version unless that repository
 has deliberately accepted the trade-offs of `latest`. Callers can also override
