@@ -127,6 +127,8 @@ jobs:
         with:
           node-version: "24.22.1"
           package-manager-cache: false
+      - name: Install the shared Conventional Commits notes generator
+        run: npm ci --ignore-scripts --legacy-peer-deps --prefix dsx-promotion-tools/.github/actions/promote-rc
       - uses: dcarbone/install-yq-action@4075b4dca348d74bd83f2bf82d30f25d7c54539b # v1.3.1
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Install registry tools

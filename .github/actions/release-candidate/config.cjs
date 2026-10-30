@@ -4,6 +4,7 @@
 const { execFileSync } = require("node:child_process");
 const { writeFileSync } = require("node:fs");
 const { releaseTarget } = require("./validate-version.cjs");
+const releaseNotesOptions = Object.freeze({ preset: "conventionalcommits" });
 
 function createConfig(branch, defaultBranch) {
   releaseTarget(branch);
@@ -21,7 +22,7 @@ function createConfig(branch, defaultBranch) {
     tagFormat: "v${version}",
     plugins: [
       ["@semantic-release/commit-analyzer", { preset: "conventionalcommits" }],
-      ["@semantic-release/release-notes-generator", { preset: "conventionalcommits" }],
+      ["@semantic-release/release-notes-generator", releaseNotesOptions],
       require.resolve("./validate-version.cjs"),
       ["@semantic-release/github", {
         successComment: false, failComment: false, releasedLabels: false,
@@ -37,7 +38,7 @@ function repositoryUrl(repository, useSsh = false) {
   return useSsh ? `git@github.com:${repository}.git` : `https://github.com/${repository}.git`;
 }
 
-module.exports = { createConfig, repositoryUrl };
+module.exports = { createConfig, repositoryUrl, releaseNotesOptions };
 
 if (require.main === module) {
   const config = createConfig(process.env.GITHUB_REF_NAME, process.env.RC_DEFAULT_BRANCH);

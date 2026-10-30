@@ -24,7 +24,8 @@ class AuthenticationTests(unittest.TestCase):
         with patch.dict(os.environ, {"GH_TOKEN": "test-workflow-token"}, clear=True), \
                 patch.object(p, "command", return_value=b"{}") as command:
             for path in ("actions/runs/12", f"releases/tags/v{RC}", "environments/stable-release",
-                         "git/ref/tags/v1.2.3", "contents/.github/rc-promotion.json"):
+                         "git/ref/tags/v1.2.3", "contents/.github/rc-promotion.json",
+                         "tags", f"commits?sha={COMMIT}", f"compare/{'b' * 40}...{COMMIT}"):
                 with self.subTest(path=path):
                     self.github.request(f"repos/example/product/{path}")
                     self.assertIsNone(command.call_args.kwargs["env"])
@@ -358,6 +359,7 @@ class ReservationTests(unittest.TestCase):
         self.github.release = Mock(return_value=None)
         self.github.read_asset = Mock(return_value=None)
         self.github.upload = Mock()
+        self.github.release_notes = Mock(return_value="## Features\n\n* New feature")
         self.github.request = Mock(side_effect=self.create)
         self.created = None
 
@@ -373,10 +375,28 @@ class ReservationTests(unittest.TestCase):
             self.github.reserve("1.2.3", COMMIT, self.intent)
         self.assertEqual(self.github.intent(self.created), self.intent)
         self.assertTrue(self.created["draft"])
+        self.assertTrue(self.created["body"].startswith("## Features\n\n* New feature\n\n"))
         self.github.release.return_value = self.created
         self.github.upload.side_effect = None
         self.assertEqual(self.github.reserve("1.2.3", COMMIT, self.intent), self.created)
         self.assertEqual(self.github.request.call_count, 1)
+        self.github.release_notes.assert_called_once_with("1.2.3", COMMIT)
+
+    def test_notes_failure_never_reserves_or_tags(self):
+        self.github.release_notes.side_effect = p.PromotionError("generator failed")
+        with self.assertRaisesRegex(p.PromotionError, "generator failed"):
+            self.github.reserve("1.2.3", COMMIT, self.intent)
+        self.github.request.assert_not_called()
+        self.github.upload.assert_not_called()
+
+    def test_legacy_reservation_retries_without_regenerating_notes(self):
+        legacy = {"id": 5, "draft": True, "prerelease": False,
+                  "body": "Verified RC promotion intent.\n\n```json\n" +
+                          p.canonical(self.intent).decode() + "```\n"}
+        self.github.release.return_value = legacy
+        self.assertEqual(self.github.reserve("1.2.3", COMMIT, self.intent), legacy)
+        self.github.release_notes.assert_not_called()
+        self.github.request.assert_not_called()
 
     def test_conflicting_tag_or_stored_intent_never_writes(self):
         self.github.tag.return_value = COMMIT
@@ -410,6 +430,114 @@ class ReservationTests(unittest.TestCase):
             "repos/example/product/releases/5", "PATCH",
             {"draft": False, "prerelease": False, "make_latest": "false"},
         ))
+
+
+class ReleaseNotesTests(unittest.TestCase):
+    def setUp(self):
+        self.github = p.GitHub("example/product")
+        self.base = "b" * 40
+        self.tags = [{"name": name, "commit": {"sha": self.base}} for name in
+                     ["v1.2.0", "v1.10.0", "v1.11.0-rc.1", "v1", "v1.9.0", "v2.0.0",
+                      "v01.10.1", "v1.010.1", "v1.10.01", "v1.10.1+build", "1.10.1", "v1.10.1\n"]]
+        self.commits = [{"sha": COMMIT, "commit": {"message": "feat: full stable range"}}]
+        self.github.request = Mock(return_value={"status": "ahead", "total_commits": 1})
+        self.github.pages = Mock(side_effect=lambda path, key=None, **kwargs:
+                                 self.tags if path == "tags" else self.commits)
+
+    def generate(self):
+        with patch.object(p, "command", return_value=b"## Features\n") as command:
+            self.assertEqual(self.github.release_notes("1.11.0", COMMIT), "## Features")
+            self.payload = json.loads(command.call_args.kwargs["data"])
+
+    def test_selects_latest_ancestor_stable_by_semver_and_uses_exact_rc_commit(self):
+        self.generate()
+        self.assertEqual(self.payload["previousTag"], "v1.10.0")
+        self.assertEqual(self.payload["version"], "1.11.0")
+        self.assertEqual(self.payload["commit"], COMMIT)
+        self.assertEqual(self.payload["commits"],
+                         [{"hash": COMMIT, "message": "feat: full stable range"}])
+        self.github.pages.assert_any_call(f"compare/{self.base}...{COMMIT}", "commits", max_pages=None)
+
+    def test_first_release_uses_reachable_history(self):
+        self.tags.clear()
+        self.generate()
+        self.assertIsNone(self.payload["previousTag"])
+        self.github.pages.assert_any_call(f"commits?sha={COMMIT}", max_pages=None)
+
+    def test_skips_stable_tags_outside_rc_ancestry(self):
+        self.github.request.side_effect = [
+            {"status": "diverged"}, {"status": "ahead", "total_commits": 1},
+        ]
+        self.generate()
+        self.assertEqual(self.payload["previousTag"], "v1.9.0")
+
+    def test_incomplete_comparison_fails_before_generation(self):
+        self.github.request.return_value["total_commits"] = 2
+        with patch.object(p, "command") as command, self.assertRaisesRegex(
+            p.PromotionError, "incomplete release notes history"
+        ):
+            self.github.release_notes("1.11.0", COMMIT)
+        command.assert_not_called()
+
+    def test_comparison_paginates_past_first_hundred_commits(self):
+        self.github.pages = p.GitHub.pages.__get__(self.github)
+        self.github.request.side_effect = [
+            [{"name": "v1.10.0", "commit": {"sha": self.base}}],
+            {"status": "ahead", "total_commits": 101},
+            {"commits": self.commits * 100}, {"commits": self.commits},
+        ]
+        self.generate()
+        self.assertEqual(len(self.payload["commits"]), 101)
+        self.assertTrue(self.github.request.call_args.args[0].endswith("per_page=100&page=2"))
+
+    def test_comparison_history_at_and_beyond_ten_full_pages(self):
+        for count in (1000, 1001):
+            with self.subTest(commits=count):
+                self.github.pages = p.GitHub.pages.__get__(self.github)
+                self.github.request.side_effect = [
+                    [{"name": "v1.10.0", "commit": {"sha": self.base}}],
+                    {"status": "ahead", "total_commits": count},
+                    *[{"commits": self.commits * 100} for _ in range(10)],
+                    {"commits": self.commits * (count - 1000)},
+                ]
+                self.generate()
+                self.assertEqual(len(self.payload["commits"]), count)
+                self.assertTrue(self.github.request.call_args.args[0].endswith("page=11"))
+
+    def test_first_release_history_at_and_beyond_ten_full_pages(self):
+        for count in (1000, 1001):
+            with self.subTest(commits=count):
+                self.github.pages = p.GitHub.pages.__get__(self.github)
+                self.github.request.side_effect = [
+                    [], *[self.commits * 100 for _ in range(10)],
+                    self.commits * (count - 1000),
+                ]
+                self.generate()
+                self.assertIsNone(self.payload["previousTag"])
+                self.assertEqual(len(self.payload["commits"]), count)
+                self.assertTrue(self.github.request.call_args.args[0].endswith("page=11"))
+
+    def test_tag_history_at_and_beyond_ten_full_pages(self):
+        stable = {"name": "v1.10.0", "commit": {"sha": self.base}}
+        for count in (1000, 1001):
+            with self.subTest(tags=count):
+                tags = [{"name": f"v1.11.0-rc.{index}"} for index in range(count - 1)] + [stable]
+                self.github.pages = p.GitHub.pages.__get__(self.github)
+                self.github.request.side_effect = [
+                    *[tags[index:index + 100] for index in range(0, 1001, 100)],
+                    {"status": "ahead", "total_commits": 1}, {"commits": self.commits},
+                ]
+                self.generate()
+                self.assertEqual(self.payload["previousTag"], "v1.10.0")
+                self.github.request.assert_any_call("repos/example/product/tags?per_page=100&page=11")
+
+    def test_nonhistory_metadata_retains_its_page_limit(self):
+        self.github.pages = p.GitHub.pages.__get__(self.github)
+        self.github.request.side_effect = None
+        self.github.request.return_value = [{}] * 100
+        with self.assertRaisesRegex(p.PromotionError, "pagination limit exceeded"):
+            self.github.pages("releases")
+        self.assertEqual(self.github.request.call_count, 10)
 
 
 if __name__ == "__main__":

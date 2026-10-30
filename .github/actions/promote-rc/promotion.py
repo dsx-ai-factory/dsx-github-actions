@@ -24,7 +24,9 @@ SHA = r"[0-9a-f]{40}"
 DIGEST = r"sha256:[0-9a-f]{64}"
 NAME = r"[a-z0-9]+(?:[._-][a-z0-9]+)*"
 NGC_PATH = r"[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_-]*"
-RC = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.([1-9][0-9]*)"
+STABLE = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+RC = rf"{STABLE}-rc\.([1-9][0-9]*)"
+INTENT_PREFIX = "Verified RC promotion intent.\n\n```json\n"
 
 
 class PromotionError(ValueError):
@@ -194,9 +196,11 @@ class GitHub:
         except ValueError:
             raise PromotionError("invalid GitHub response") from None
 
-    def pages(self, path, key=None):
+    def pages(self, path, key=None, *, max_pages=10):
+        """Collect API pages; release history opts out of the metadata page limit."""
         result = []
-        for page in range(1, 11):
+        page = 1
+        while max_pages is None or page <= max_pages:
             join = "&" if "?" in path else "?"
             value = self.request(f"{self.root}/{path}{join}per_page=100&page={page}")
             items = value[key] if key else value
@@ -204,6 +208,7 @@ class GitHub:
             result.extend(items)
             if len(items) < 100:
                 return result
+            page += 1
         raise PromotionError("GitHub pagination limit exceeded")
 
     def tag(self, tag):
@@ -346,16 +351,52 @@ class GitHub:
 
     @staticmethod
     def intent(release):
-        prefix = "Verified RC promotion intent.\n\n```json\n"
+        """Read the final promotion evidence block, with or without leading notes."""
         body = release.get("body", "")
-        require(body.startswith(prefix) and body.endswith("```\n"),
+        # New descriptions lead with release notes; legacy reservations contain
+        # only this evidence block. Always parse the final block on retries.
+        _, marker, stored = body.rpartition(INTENT_PREFIX)
+        require(marker and stored.endswith("```\n"),
                 "stable release has no verified promotion intent")
         try:
-            result = json.loads(body[len(prefix):-4])
+            result = json.loads(stored[:-4])
         except ValueError:
             raise PromotionError("invalid stored promotion intent") from None
         require(isinstance(result, dict), "invalid stored promotion intent")
         return result
+
+    def release_notes(self, stable, commit):
+        """Generate Conventional Commits notes from the preceding stable ancestor."""
+        target = tuple(map(int, stable.split(".")))
+        tags = [tag for tag in self.pages("tags", max_pages=None)
+                if matches(f"v{STABLE}", tag["name"])]
+        tags.sort(key=lambda tag: tuple(map(int, tag["name"][1:].split("."))), reverse=True)
+        previous = None
+        for tag in tags:
+            if tuple(map(int, tag["name"][1:].split("."))) >= target:
+                continue
+            base = tag["commit"]["sha"]
+            require(matches(SHA, base), "invalid release notes baseline")
+            comparison = f"compare/{base}...{commit}"
+            info = self.request(f"{self.root}/{comparison}?per_page=1")
+            if info["status"] in {"ahead", "identical"}:
+                previous = tag["name"]
+                commits = self.pages(comparison, "commits", max_pages=None)
+                require(len(commits) == info["total_commits"], "incomplete release notes history")
+                break
+        else:
+            # A first stable release includes all history reachable from its RC.
+            commits = self.pages(f"commits?sha={commit}", max_pages=None)
+        payload = {
+            "repository": self.repository, "version": stable, "previousTag": previous,
+            "commit": commit,
+            "commits": [{"hash": item["sha"], "message": item["commit"]["message"]}
+                        for item in commits],
+        }
+        notes = command(["node", str(Path(__file__).with_name("release-notes.mjs"))],
+                        data=canonical(payload)).decode().strip()
+        require(notes, "release notes generator returned no description")
+        return notes
 
     def release(self, stable):
         matches_ = [item for item in self.pages("releases")
@@ -386,14 +427,15 @@ class GitHub:
                      "--repo", self.repository], env=env)
 
     def reserve(self, stable, commit, intent):
+        """Reuse matching evidence or reserve a draft with notes before tagging."""
         existing_tag = self.tag(f"v{stable}")
         release = self.release(stable)
-        body = "Verified RC promotion intent.\n\n```json\n" + canonical(intent).decode() + "```\n"
+        body = INTENT_PREFIX + canonical(intent).decode() + "```\n"
         if release:
             require(release["prerelease"] is False, "stable release is a prerelease")
             require(existing_tag in {None, commit}, "stable tag points to a different commit")
             # The atomic release creation stores the intent before its asset upload.
-            require(release.get("body") == body, "stable release belongs to different promotion intent")
+            require(self.intent(release) == intent, "stable release belongs to different promotion intent")
             asset = self.read_asset(release, "promotion-intent.json")
             require(asset is None or asset == intent,
                     "stable version belongs to different promotion evidence")
@@ -403,6 +445,9 @@ class GitHub:
                 self.upload(release, "promotion-intent.json", intent)
             return release
         require(existing_tag is None, "stable tag exists without matching promotion intent")
+        # Generate once before reserving or tagging. Retries retain the stored
+        # description even if other stable releases have since been published.
+        body = self.release_notes(stable, commit) + "\n\n" + body
         release = self.request(f"{self.root}/releases", "POST", {
             "tag_name": f"v{stable}", "target_commitish": commit, "name": f"v{stable}",
             "draft": True, "prerelease": False,
