@@ -1,0 +1,224 @@
+# Copyright 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# The caller must use workflow_run after its vetted copy-pr-bot collector.
+# Tools come from this workflow's pinned SHA; Fern configuration comes from the
+# caller's default branch. Only staged pages are accepted from the artifact.
+# The path checker is defense in depth, not a sandbox for hostile MDX.
+
+name: Publish Fern preview
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-24.04
+      fern_cli_version:
+        type: string
+        required: true
+      navigation_file:
+        type: string
+        default: ''
+      docs_directory:
+        type: string
+        default: docs
+      docs_paths:
+        type: string
+        default: ''
+      frozen_versions:
+        type: boolean
+        default: false
+      native_checks:
+        type: boolean
+        default: false
+      preview_namespace:
+        description: Namespace separated from existing pr-N previews; use a unique value for experiments
+        type: string
+        default: shared-fern
+      post_comment:
+        type: boolean
+        default: true
+    secrets:
+      FERN_TOKEN:
+        required: true
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+concurrency:
+  group: shared-fern-preview-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  preview:
+    # head_repository is set by GitHub, not by the PR author.
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    steps:
+      - name: Require reusable workflow SHA
+        if: job.workflow_sha == ''
+        run: |
+          echo "::error::Reusable workflow SHA is unavailable"
+          exit 1
+      - name: Checkout shared tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: dsx-ai-factory/dsx-github-actions
+          ref: ${{ job.workflow_sha }}
+          path: _fern-shared
+          persist-credentials: false
+      - name: Download pages and metadata
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: shared-fern-preview
+          path: preview
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate and read PR metadata
+        id: metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          PR_NUMBER=$(cat preview/preview-metadata/pr_number)
+          # [[ =~ ]] matches the whole string. grep -E is per line and would let
+          # "12<newline>foo=bar" through into $GITHUB_OUTPUT.
+          if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid pr_number in artifact"
+            exit 1
+          fi
+          # The number comes from the artifact. Require that the PR head is the
+          # commit that triggered this run and that the run came from the bot
+          # branch for the same number. Only the bot creates that branch.
+          PR_HEAD=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha')
+          if [ "$PR_HEAD" != "$RUN_HEAD_SHA" ] || [ "$RUN_HEAD_BRANCH" != "pull-request/${PR_NUMBER}" ]; then
+            echo "::error::pr_number ${PR_NUMBER} does not match the run that produced the artifact"
+            exit 1
+          fi
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      # Pin the source to the caller's trusted default branch, not the PR head.
+      - name: Checkout trusted tree from the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          path: trusted
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Overlay PR pages on the trusted configuration
+        env:
+          NAVIGATION_FILE: ${{ inputs.navigation_file }}
+          DOCS_DIRECTORY: ${{ inputs.docs_directory }}
+        run: python3 _fern-shared/.github/actions/fern-docs/scripts/prepare.py stage preview/site --destination trusted
+
+      - name: Prepare and validate trusted configuration with PR pages
+        uses: ./_fern-shared/.github/actions/fern-docs
+        with:
+          working-directory: trusted
+          fern-cli-version: ${{ inputs.fern_cli_version }}
+          docs-directory: ${{ inputs.docs_directory }}
+          docs-paths: ${{ inputs.docs_paths || inputs.docs_directory }}
+          navigation-file: ${{ inputs.navigation_file }}
+          frozen-versions: ${{ inputs.frozen_versions }}
+          native-checks: ${{ inputs.native_checks }}
+
+      - name: Generate preview URL
+        id: generate-docs
+        env:
+          FERN_TOKEN: ${{ secrets.FERN_TOKEN }}
+          PR_NUMBER: ${{ steps.metadata.outputs.pr_number }}
+          PREVIEW_NAMESPACE: ${{ inputs.preview_namespace }}
+        working-directory: ./trusted/fern
+        run: |
+          set -o pipefail
+          [[ "$PREVIEW_NAMESPACE" =~ ^[a-z0-9][a-z0-9-]*$ ]] || exit 1
+          PREVIEW_ID="${PREVIEW_NAMESPACE}-${GITHUB_REPOSITORY//\//-}-pr-${PR_NUMBER}"
+          PREVIEW_ID="${PREVIEW_ID,,}"
+          fern generate --docs --preview --id "$PREVIEW_ID" 2>&1 | tee "$RUNNER_TEMP/fern-output.log"
+          # Fern prints "Published docs to URL", sometimes followed by " (URL)".
+          URL=$(sed -n 's/.*Published docs to \(https:[^[:space:]]*\).*/\1/p' "$RUNNER_TEMP/fern-output.log" | tail -1)
+          if [ -z "$URL" ]; then
+            echo "::error::Failed to generate preview URL. See fern output above."
+            exit 1
+          fi
+          if ! printf '%s' "$URL" | grep -qE '^https://[a-zA-Z0-9._-]+\.buildwithfern\.com([/:?#]|$)'; then
+            echo "::error::Unexpected preview URL host (expected buildwithfern.com): ${URL}"
+            exit 1
+          fi
+          echo "preview_url=$URL" >> "$GITHUB_OUTPUT"
+
+      # The page-links request does not send FERN_TOKEN.
+      - name: Build page links for changed files
+        id: page-links
+        env:
+          PREVIEW_URL: ${{ steps.generate-docs.outputs.preview_url }}
+        run: |
+          CHANGED_FILES=""
+          if [ -f preview/preview-metadata/changed_md_files ]; then
+            CHANGED_FILES=$(cat preview/preview-metadata/changed_md_files)
+          fi
+          if [ -z "$CHANGED_FILES" ] || [ -z "$PREVIEW_URL" ]; then
+            echo "page_links=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          BASE_URL="${PREVIEW_URL%/}"
+          FILES_PARAM=$(echo "$CHANGED_FILES" | tr '\n' ',' | sed 's/,$//' \
+            | python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read().strip(), safe=',/'))")
+          RESPONSE=$(curl -sf "${PREVIEW_URL}/api/fern-docs/get-slug-for-file?files=${FILES_PARAM}" 2>/dev/null) || {
+            echo "page_links=" >> "$GITHUB_OUTPUT"; exit 0
+          }
+
+          PAGE_LINKS=$(printf '%s' "$RESPONSE" | python3 _fern-shared/.github/actions/fern-docs/scripts/page-links.py "$BASE_URL")
+
+          if [ -n "$PAGE_LINKS" ]; then
+            { delimiter="fern-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"; echo "page_links<<$delimiter"; echo "$PAGE_LINKS"; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
+          else
+            echo "page_links=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post or update PR comment
+        if: inputs.post_comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.metadata.outputs.pr_number }}
+          PREVIEW_URL: ${{ steps.generate-docs.outputs.preview_url }}
+          PAGE_LINKS: ${{ steps.page-links.outputs.page_links }}
+        run: |
+          BODY=":herb: **Preview your docs:** <${PREVIEW_URL}>"
+          if [ -n "${PAGE_LINKS}" ]; then
+            BODY="${BODY}
+
+          Here are the markdown pages you've updated:
+          ${PAGE_LINKS}"
+          fi
+
+          MARKER="<!-- shared-fern-preview -->"
+          BODY="${BODY}
+
+          ${MARKER}"
+
+          # Match only the bot's own comment, because anyone can post the marker.
+          # Page through all comments so an older one is still found.
+          COMMENT_ID=$(gh api --paginate "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"${MARKER}\"))) | .id" | tr -d '\r' | head -1)
+
+          if [ -n "$COMMENT_ID" ]; then
+            gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}" \
+              -X PATCH -f body="$BODY"
+          else
+            gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+              -f body="$BODY"
+          fi

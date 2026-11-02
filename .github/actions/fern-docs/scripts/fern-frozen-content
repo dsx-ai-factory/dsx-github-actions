@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Extract the Fern pages of a release tag into OUTDIR for a frozen docs version.
+
+Reads index.yml from the tag, copies the pages it lists with tools/stage-fern-site
+so the same path rules apply, then pins links. A relative link to anything that is
+not a listed page, such as a YAML file or a directory, would break in the frozen
+copy, so it becomes a GitHub URL for that path at the tag. A URL for this repository
+on master moves to the tag too. Finally it escapes {, },
+and < outside fenced code blocks and inline code spans so older pages still parse as
+MDX. The pages keep their repository paths under OUTDIR, which matches the paths in
+the tag's index.yml.
+
+Usage: fern-frozen-content TAG OUTDIR REPO_URL
+"""
+
+from __future__ import annotations
+
+import io
+import posixpath
+import re
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+LINK = re.compile(r"\]\(([^)\s]+)\)")
+STAGE = Path(__file__).with_name("stage-fern-site")
+
+
+def track_fence(line: str, fence: tuple[str, int] | None) -> tuple[str, int] | None:
+    """Return the open code fence after line, or None.
+
+    A closing fence uses the opener's character, is at least as long, and has no
+    text after it, so a three-backtick block inside a four-backtick fence does
+    not close it. This is the rule tools/check-docs-mdx applies.
+    """
+    match = FENCE.match(line)
+    if not match:
+        return fence
+    marker, rest = match.groups()
+    if fence is None:
+        return (marker[0], len(marker))
+    if marker[0] == fence[0] and len(marker) >= fence[1] and not rest.strip():
+        return None
+    return fence
+
+
+def escape_mdx(text: str) -> str:
+    out, fence = [], None
+    for line in text.split("\n"):
+        was_open = fence is not None
+        fence = track_fence(line, fence)
+        if was_open or fence is not None:
+            out.append(line)
+            continue
+        parts = line.split("`")
+        for i in range(0, len(parts), 2):
+            # Keep braces the author already escaped.
+            part = parts[i].replace("\\{", "\x01").replace("\\}", "\x02")
+            part = part.replace("{", "\\{").replace("}", "\\}").replace("<", "&lt;")
+            parts[i] = part.replace("\x01", "\\{").replace("\x02", "\\}")
+        out.append("`".join(parts))
+    return "\n".join(out)
+
+
+def pin_links(outdir: Path, source: Path, repo_url: str, tag: str) -> None:
+    """Point links at the tag on GitHub instead of a staged page or master.
+
+    A relative link whose target is not a staged page becomes a URL for that path
+    at the tag. A URL for this repository on master moves to the tag as well.
+    """
+    pages = {p.relative_to(outdir).as_posix() for p in outdir.rglob("*") if p.suffix.lower() in {".md", ".mdx"}}
+
+    def rewrite(page: str):
+        def sub(match: re.Match) -> str:
+            target = match.group(1)
+            if re.match(r"^([A-Za-z][A-Za-z0-9+.-]*:|#|/)", target):
+                return match.group(0)
+            path, sep, anchor = target.partition("#")
+            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(page), path.split("?")[0]))
+            if not path or resolved.startswith("..") or resolved in pages:
+                return match.group(0)
+            original = source / resolved
+            if not original.exists():
+                return match.group(0)
+            kind = "tree" if original.is_dir() else "blob"
+            return f"]({repo_url}/{kind}/{tag}/{resolved}{sep}{anchor})"
+        return sub
+
+    for page in sorted(pages):
+        out, fence = [], None
+        file = outdir / page
+        for line in file.read_text(encoding="utf-8").split("\n"):
+            was_open = fence is not None
+            fence = track_fence(line, fence)
+            if not was_open and fence is None:
+                line = LINK.sub(rewrite(page), line)
+                for kind in ("blob", "tree"):
+                    line = line.replace(f"{repo_url}/{kind}/master/", f"{repo_url}/{kind}/{tag}/")
+            out.append(line)
+        file.write_text("\n".join(out), encoding="utf-8")
+
+
+def main() -> int:
+    if len(sys.argv) != 4:
+        print(__doc__, file=sys.stderr)
+        return 2
+    tag, outdir, repo_url = sys.argv[1], Path(sys.argv[2]), sys.argv[3].rstrip("/")
+
+    archive = subprocess.run(
+        ["git", "archive", f"refs/tags/{tag}"], capture_output=True, check=False
+    )
+    if archive.returncode != 0:
+        print(f"tag {tag} not found or not archivable", file=sys.stderr)
+        return 1
+
+    with tempfile.TemporaryDirectory() as tmp:
+        with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
+            tar.extractall(tmp, filter="data")
+        if not (Path(tmp) / "index.yml").is_file():
+            print(f"tag {tag} has no index.yml, so it cannot be registered", file=sys.stderr)
+            return 1
+        staged = subprocess.run([sys.executable, str(STAGE), tmp, str(outdir)], check=False)
+        if staged.returncode != 0:
+            return staged.returncode
+        (outdir / "index.yml").unlink()
+        pin_links(outdir, Path(tmp), repo_url, tag)
+
+    for page in outdir.rglob("*"):
+        if page.suffix.lower() in {".md", ".mdx"} and page.is_file():
+            page.write_text(escape_mdx(page.read_text(encoding="utf-8")), encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -12,7 +12,7 @@ on:
         default: "linux-amd64-cpu4"
         type: string
       fern_cli_version:
-        description: "Fern CLI npm version"
+        description: "Exact Fern CLI version matching fern/fern.config.json"
         required: true
         type: string
       docs_directory:
@@ -20,6 +20,26 @@ on:
         required: false
         default: "docs"
         type: string
+      docs_paths:
+        description: "Markdown paths to check, one per line; defaults to docs_directory"
+        required: false
+        default: ""
+        type: string
+      navigation_file:
+        description: "Set to index.yml for repository-wide navigation"
+        required: false
+        default: ""
+        type: string
+      frozen_versions:
+        description: "Rebuild registered versions from release tags"
+        required: false
+        default: false
+        type: boolean
+      native_checks:
+        description: "Run Fern native MDX and broken-link checks instead of Lychee"
+        required: false
+        default: false
+        type: boolean
       fern_working_directory:
         description: "Caller-relative directory where fern check runs"
         required: false
@@ -44,6 +64,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+          path: source
 
       - name: Require reusable workflow SHA
         if: ${{ job.workflow_sha == '' }}
@@ -57,31 +79,25 @@ jobs:
         with:
           repository: dsx-ai-factory/dsx-github-actions
           ref: ${{ job.workflow_sha }}
-          path: dsx-github-actions
+          path: _fern-shared
           persist-credentials: false
 
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - name: Prepare and validate Fern docs
+        uses: ./_fern-shared/.github/actions/fern-docs
         with:
-          node-version: "24.22.1"
-          package-manager-cache: false
-
-      - name: Install Fern CLI
-        env:
-          FERN_CLI_VERSION: ${{ inputs.fern_cli_version }}
-        run: npm install --global "fern-api@${FERN_CLI_VERSION}"
-
-      - name: Check MDX safety
-        env:
-          DOCS_DIRECTORY: ${{ inputs.docs_directory }}
-        run: python3 dsx-github-actions/.github/scripts/check_docs_mdx.py "$DOCS_DIRECTORY"
-
-      - name: Run Fern check
-        working-directory: ${{ inputs.fern_working_directory }}
-        run: fern check
+          working-directory: source
+          fern-working-directory: ${{ inputs.fern_working_directory }}
+          fern-cli-version: ${{ inputs.fern_cli_version }}
+          docs-directory: ${{ inputs.docs_directory }}
+          docs-paths: ${{ inputs.docs_paths || inputs.docs_directory }}
+          navigation-file: ${{ inputs.navigation_file }}
+          frozen-versions: ${{ inputs.frozen_versions }}
+          native-checks: ${{ inputs.native_checks }}
 
       - name: Check links
+        if: ${{ !inputs.native_checks }}
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2
         with:
+          workingDirectory: source
           args: ${{ inputs.link_args }}
           fail: true

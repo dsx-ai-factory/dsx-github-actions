@@ -1,0 +1,64 @@
+# Copyright 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Prepare and validate Fern docs
+description: Check staged pages, rebuild frozen versions, and run the pinned Fern CLI without publishing.
+inputs:
+  working-directory:
+    description: Caller checkout directory
+    default: '.'
+  fern-working-directory:
+    description: Caller-relative directory where Fern runs; Markdown paths remain caller-relative
+    default: '.'
+  fern-cli-version:
+    description: Exact Fern version matching fern/fern.config.json
+    required: true
+  docs-directory:
+    description: Documentation directory for repositories without root navigation
+    default: docs
+  docs-paths:
+    description: Markdown files or directories to check, one per line
+    default: docs
+  navigation-file:
+    description: Set to index.yml for navigation listing pages across the repository
+    default: ''
+  frozen-versions:
+    description: Rebuild registered versions from release tags before validation
+    default: 'false'
+  native-checks:
+    description: Run fern docs md check and fern docs broken-links
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Prepare and check local documentation inputs
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        SOURCE: ${{ inputs.working-directory }}
+        FERN_CLI_VERSION: ${{ inputs.fern-cli-version }}
+        FERN_WORKING_DIRECTORY: ${{ inputs.fern-working-directory }}
+        DOCS_DIRECTORY: ${{ inputs.docs-directory }}
+        DOCS_PATHS: ${{ inputs.docs-paths }}
+        NAVIGATION_FILE: ${{ inputs.navigation-file }}
+        FROZEN_VERSIONS: ${{ inputs.frozen-versions }}
+      run: python3 "$ACTION_PATH/scripts/prepare.py" check "$SOURCE"
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: "24.22.1"
+        package-manager-cache: false
+    - name: Install the pinned Fern CLI
+      shell: bash
+      env:
+        FERN_CLI_VERSION: ${{ inputs.fern-cli-version }}
+      run: npm install --global "fern-api@${FERN_CLI_VERSION}"
+    - name: Check Fern configuration
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}/${{ inputs.fern-working-directory }}
+      run: fern check
+    - name: Check rendered MDX and links
+      if: inputs.native-checks == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}/${{ inputs.fern-working-directory }}
+      run: |
+        fern docs md check
+        fern docs broken-links

@@ -1,0 +1,27 @@
+# Copyright 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Fern contracts
+on:
+  pull_request:
+    paths:
+      - '.github/actions/fern-docs/**'
+      - '.github/scripts/check_docs_mdx.py'
+      - '.github/scripts/test_check_docs_mdx.py'
+      - '.github/workflows/fern-docs*.yml'
+      - '.github/workflows/publish-fern-docs.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dcarbone/install-yq-action@4075b4dca348d74bd83f2bf82d30f25d7c54539b # v1.3.1
+      - name: Test staging, frozen versions, registration, and publication guards
+        run: python3 -m unittest discover -s .github/actions/fern-docs/tests -v
+      - name: Test Markdown checks
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'

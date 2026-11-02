@@ -1,0 +1,124 @@
+# Fern documentation workflows
+
+The shared workflows validate docs, collect PR pages, publish previews, and
+publish stable releases. Callers own event triggers and path filters. Pin every
+caller to the same reviewed full commit SHA.
+
+| Workflow | Purpose | Required permissions |
+| --- | --- | --- |
+| `fern-docs-ci.yml` | MDX, path, Fern configuration and link checks | `contents: read` |
+| `fern-docs-preview-build.yml` | Collect pages from a vetted `pull-request/N` push | `contents: read` |
+| `fern-docs-preview-comment.yml` | Publish a preview from the collector artifact | `contents: read`, `actions: read`, `pull-requests: write` |
+| `publish-fern-docs.yml` | Validate a stable release, optionally publish and register it | `contents: write`, `pull-requests: write` |
+
+All four use `workflow_call` only. The composite action in this directory
+prepares and validates docs without publishing. Runners need Bash, Python 3.12+
+and Git. The action installs Node.js and the caller's exact Fern CLI version.
+That version must match `fern/fern.config.json`.
+This replaces the initial draft's acceptance of `latest`; update both pins when
+adopting the workflow. `docs_directory`, `docs_paths`, and Lychee arguments remain
+relative to the caller root even when `fern_working_directory` is set.
+
+## Identity validation
+
+Preserve Identity's push triggers on `master` and `pull-request/[0-9]+`, manual
+dispatch, and caller concurrency. Its documentation is spread across directories
+and listed in root `index.yml`:
+
+```yaml
+jobs:
+  fern-check:
+    uses: dsx-ai-factory/dsx-github-actions/.github/workflows/fern-docs-ci.yml@REVIEWED_FULL_COMMIT_SHA
+    with:
+      runner: ubuntu-24.04
+      fern_cli_version: '5.186.0'
+      navigation_file: index.yml
+      docs_paths: |
+        docs
+        examples
+        cmd
+        charts
+        kata-uds-proxy
+      frozen_versions: true
+      native_checks: true
+```
+
+`native_checks` runs `fern docs md check` and `fern docs broken-links` instead of
+Lychee. Frozen pages are extracted from release tags before validation. Fetching
+full history and tags is part of the workflow.
+
+For a directory layout such as Exchange, leave `navigation_file` empty and use
+`docs_directory: docs`. Pin its Fern config and CLI to the same reviewed version
+before adoption. `docs_paths` accepts one path per line and defaults to
+`docs_directory`. The original Lychee `link_args` input remains available.
+Fern config, multi-source settings, product URLs, and slugs stay in the caller.
+
+## Preview handoff
+
+Keep two thin caller workflows:
+
+1. A push workflow for vetted `pull-request/[0-9]+` branches calls
+   `fern-docs-preview-build.yml`. Include `index.yml`, published Markdown paths,
+   Fern config, and caller workflows in its path filters.
+2. A `workflow_run` workflow, listening to that caller workflow's **name**, calls
+   `fern-docs-preview-comment.yml` with the same layout inputs and explicit
+   `secrets: { FERN_TOKEN: "${{ secrets.FERN_TOKEN }}" }`. Exchange can map
+   `DOCS_FERN_TOKEN` to the same shared secret name.
+
+The collector has no Fern token. The preview checks the producer repository,
+successful run, bot branch number, and current PR head SHA. It reads shared tools
+from the called workflow SHA and Fern configuration from the caller's default
+branch, then overlays only staged pages. PR edits to trusted configuration or
+tools are intentionally not previewed before merge. Copy-pr-bot vetting remains
+required: the path checker is defense in depth, not an MDX sandbox.
+
+Previews use `shared-fern-OWNER-REPO-pr-N` (lowercase) by default, separate from
+the old `pr-N` IDs. Set a distinct `preview_namespace` and `post_comment: false`
+for an isolated preview test. Reusing the same namespace/repository/PR tuple
+updates that preview. The shared comment marker is `<!-- shared-fern-preview -->`.
+See [Fern's preview behavior](https://buildwithfern.com/learn/docs/preview-publish/preview-changes).
+
+The caller's `workflow_run` listener must exist on its default branch. A new
+feature branch alone cannot prove that handoff. Replace each old workflow in the
+same migration PR that enables its shared replacement; do not run two publishers.
+
+## Stable releases
+
+`publish-fern-docs.yml` defaults to `publish: false`: it resolves the tag, prepares
+and checks the site, and makes no Fern publication or registry PR. Omit
+`FERN_TOKEN` during these tests. An ordinary feature-branch push has no publishing
+trigger in the shared repository.
+
+Real publishing requires `publish: true`, `FERN_TOKEN`, and a release/tag event
+or manual dispatch on the caller's default branch. A manual dispatch from a
+feature branch is rejected. This gate does not protect against callers changing
+their own workflow code; retain normal branch and runner protections.
+The release tag must also be reachable from the caller's default branch, so a
+tag created only on a test branch cannot publish through the shared workflow.
+
+For Identity, keep `register_versions: true`, `navigation_file: index.yml`, and
+its MDX paths. Registration uses the tag's navigation, retains the newest
+`max_versions` (default 3), and opens `docs/fern-register-TAG` after publication.
+Merge the preceding registry PR before publishing another version. A tag without
+`index.yml` is rejected. Version and source ref remain the same; docs-only source
+overrides are not implemented.
+
+For Exchange, use `register_versions: false`, empty `navigation_file`, and
+`native_checks: false` to validate/publish the release tree without a registry PR.
+The shared publisher only accepts stable `vMAJOR.MINOR.PATCH` tags and skips
+prereleases. Exchange currently permits prerelease tags, so its caller migration
+must explicitly account for this policy difference.
+
+## Verification
+
+`Fern contracts` exercises the real helpers against temporary Git repositories:
+accepted and rejected paths, pages outside `docs/`, trusted overlays, frozen
+content and pinned links, registration ordering/pruning, and publication event
+guards. For the real Identity integration check, run its existing manually
+triggered validation workflow from an isolated feature branch, calling the
+reviewed shared SHA with no secrets. Identity is internal, so a default token
+from this shared repository cannot check it out. These checks do not exercise
+a live preview or production publish.
+
+The staging, path, and frozen-content helpers originate from
+[Identity](https://github.com/dsx-ai-factory/nvidia-workload-identity/tree/cebaa6ae31dd3b891a2428ad7de554f1b8424c2e/tools).
