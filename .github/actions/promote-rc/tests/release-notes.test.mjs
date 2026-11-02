@@ -67,3 +67,42 @@ test('keeps a revert when the original change is outside the release range', () 
   assert.ok(result.includes('previously released feature'), result);
   assert.ok(result.includes('retained fix'), result);
 });
+
+test('keeps features and fixes that are reverted and reapplied', () => {
+  for (const type of ['feat', 'fix']) {
+    for (const previousTag of ['v1.14.0', null]) {
+      const original = `${type}: restored change`;
+      const result = notes([
+        `Reapply "${original}"\n\nThis reverts commit ${'1'.padStart(40, 'a')}.`,
+        `Revert "${original}"\n\nThis reverts commit ${'2'.padStart(40, 'a')}.`,
+        original,
+        'fix: retained fix',
+      ], previousTag);
+      assert.ok(result.includes('restored change'), result);
+      assert.ok(result.includes('retained fix'), result);
+      assert.ok(!result.includes('### Reverts'), result);
+    }
+  }
+});
+
+test('omits a reapplied feature when it is reverted again', () => {
+  const result = notes([
+    `Revert "Reapply "feat: temporary change""\n\nThis reverts commit ${'1'.padStart(40, 'a')}.`,
+    `Reapply "feat: temporary change"\n\nThis reverts commit ${'2'.padStart(40, 'a')}.`,
+    `Revert "feat: temporary change"\n\nThis reverts commit ${'3'.padStart(40, 'a')}.`,
+    'feat: temporary change',
+    'fix: retained fix',
+  ]);
+  assert.ok(!result.includes('temporary change'), result);
+  assert.ok(result.includes('retained fix'), result);
+});
+
+test('keeps standalone reapplications and conventional revert messages', () => {
+  for (const prefix of ['Reapply', 'revert:']) {
+    const result = notes([
+      `${prefix} "feat: previously released feature"\n\nThis reverts commit ${'b'.repeat(40)}.`,
+    ]);
+    assert.ok(result.includes('### Reverts'), result);
+    assert.ok(result.includes('previously released feature'), result);
+  }
+});

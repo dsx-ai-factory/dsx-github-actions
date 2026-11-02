@@ -7,7 +7,14 @@ import { generateNotes } from '@semantic-release/release-notes-generator';
 import { releaseNotesOptions, repositoryUrl } from '../release-candidate/config.cjs';
 
 const input = JSON.parse(readFileSync(0, 'utf8'));
-const notes = await generateNotes(releaseNotesOptions, {
+const notes = await generateNotes({
+  ...releaseNotesOptions,
+  parserOpts: {
+    // Git's Reapply subject differs from the reverted commit's header; match its hash.
+    revertPattern: /^(?:Revert|revert:|Reapply)\s"?[\s\S]+?"?\s*This reverts commit (\w*)\./i,
+    revertCorrespondence: ['hash'],
+  },
+}, {
   cwd: fileURLToPath(new URL('.', import.meta.url)),
   options: { repositoryUrl: repositoryUrl(input.repository) },
   commits: input.commits,
