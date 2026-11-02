@@ -40,3 +40,30 @@ test('first release and empty visible changes still have a stable version headin
   assert.match(notes(['feat: initial feature'], null), /initial feature/);
   assert.match(notes(['chore: metadata only']), /1\.15\.0/);
 });
+
+test('omits reverted features and fixes while keeping unrelated changes', () => {
+  for (const type of ['feat', 'fix']) {
+    for (const previousTag of ['v1.14.0', null]) {
+      const original = `${type}: temporary change`;
+      const result = notes([
+        `Revert "${original}"\n\nThis reverts commit ${'1'.padStart(40, 'a')}.`,
+        original,
+        'feat: retained feature',
+        'fix: retained fix',
+      ], previousTag);
+      assert.ok(!result.includes('temporary change'), result);
+      assert.ok(result.includes('retained feature'), result);
+      assert.ok(result.includes('retained fix'), result);
+    }
+  }
+});
+
+test('keeps a revert when the original change is outside the release range', () => {
+  const result = notes([
+    `Revert "feat: previously released feature"\n\nThis reverts commit ${'b'.repeat(40)}.`,
+    'fix: retained fix',
+  ]);
+  assert.ok(result.includes('### Reverts'), result);
+  assert.ok(result.includes('previously released feature'), result);
+  assert.ok(result.includes('retained fix'), result);
+});

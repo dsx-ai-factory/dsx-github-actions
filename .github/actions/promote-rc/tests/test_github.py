@@ -464,6 +464,15 @@ class ReleaseNotesTests(unittest.TestCase):
         self.assertIsNone(self.payload["previousTag"])
         self.github.pages.assert_any_call(f"commits?sha={COMMIT}", max_pages=None)
 
+    def test_first_release_keeps_newest_first_history(self):
+        self.tags.clear()
+        self.commits.extend([
+            {"sha": "a" * 40, "commit": {"message": "feat: earlier change"}},
+        ])
+        self.generate()
+        self.assertEqual([item["hash"] for item in self.payload["commits"]],
+                         [COMMIT, "a" * 40])
+
     def test_skips_stable_tags_outside_rc_ancestry(self):
         self.github.request.side_effect = [
             {"status": "diverged"}, {"status": "ahead", "total_commits": 1},
@@ -480,14 +489,17 @@ class ReleaseNotesTests(unittest.TestCase):
         command.assert_not_called()
 
     def test_comparison_paginates_past_first_hundred_commits(self):
+        commits = [{"sha": f"{index:040x}", "commit": {"message": f"fix: change {index}"}}
+                   for index in range(101)]
         self.github.pages = p.GitHub.pages.__get__(self.github)
         self.github.request.side_effect = [
             [{"name": "v1.10.0", "commit": {"sha": self.base}}],
             {"status": "ahead", "total_commits": 101},
-            {"commits": self.commits * 100}, {"commits": self.commits},
+            {"commits": commits[:100]}, {"commits": commits[100:]},
         ]
         self.generate()
-        self.assertEqual(len(self.payload["commits"]), 101)
+        self.assertEqual([item["hash"] for item in self.payload["commits"]],
+                         [item["sha"] for item in reversed(commits)])
         self.assertTrue(self.github.request.call_args.args[0].endswith("per_page=100&page=2"))
 
     def test_comparison_history_at_and_beyond_ten_full_pages(self):

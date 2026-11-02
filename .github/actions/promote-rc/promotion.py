@@ -383,6 +383,8 @@ class GitHub:
                 previous = tag["name"]
                 commits = self.pages(comparison, "commits", max_pages=None)
                 require(len(commits) == info["total_commits"], "incomplete release notes history")
+                # Compare returns oldest first; revert filtering needs newest first.
+                commits.reverse()
                 break
         else:
             # A first stable release includes all history reachable from its RC.
