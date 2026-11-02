@@ -29,10 +29,13 @@ const notes = await generateNotes({
 // A merge revert can undo branch commits as well as its target merge. Hash-only
 // cancellation cannot determine that set, so retain an explicit warning instead.
 const mergeReverts = input.commits.flatMap(({ hash, message }) => {
-  const match = /^This reverts commit ([0-9a-f]{40}), reversing\r?\nchanges made to [0-9a-f]{40}\./m.exec(message);
+  const match = /^This reverts commit ([0-9a-f]{4,40})(?: \([^\r\n]*\))?, reversing\r?\nchanges made to [0-9a-f]{4,40}(?: \([^\r\n]*\))?\./m.exec(message);
   if (!match) return [];
   const merge = match[1];
-  return [`* [${hash.slice(0, 7)}](${repository}/commit/${hash}) (reverts merge [${merge.slice(0, 7)}](${repository}/commit/${merge}))`];
+  // --reference (or revert.reference=true) may abbreviate the target hash.
+  // Always link the revert itself; only link a target with a complete identity.
+  const target = merge.length === 40 ? `[${merge.slice(0, 7)}](${repository}/commit/${merge})` : `\`${merge}\``;
+  return [`* [${hash.slice(0, 7)}](${repository}/commit/${hash}) (reverts merge ${target})`];
 });
 const warning = mergeReverts.length ? [
   '\n### Merge revert warning\n',

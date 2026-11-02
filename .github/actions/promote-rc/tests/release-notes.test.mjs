@@ -124,3 +124,20 @@ test('warns about merge reverts whose branch features remain in the history', ()
     assert.ok(result.includes('retained fix'), result);
   }
 });
+
+test('warns about reference-format merge reverts with abbreviated targets', () => {
+  // Git emits this body for both --reference and revert.reference=true. The
+  // user supplies the subject, so detection must depend on the body instead.
+  for (const previousTag of ['v1.14.0', null]) {
+    const result = notes([
+      "fix: undo merged feature\n\nThis reverts commit f707745 (Merge branch 'feature' (reviewed), 2026-11-02), reversing\nchanges made to 1bfd61f (fix: baseline, 2026-11-02).",
+      'fix: retained fix',
+    ], previousTag);
+    assert.ok(result.includes('### Merge revert warning'), result);
+    assert.ok(result.includes('may have been undone'), result);
+    assert.ok(result.includes(`https://github.com/example/product/commit/${'0'.padStart(40, 'a')}`), result);
+    assert.ok(result.includes('reverts merge `f707745`'), result);
+    assert.ok(!result.includes('/commit/f707745'), result);
+    assert.ok(result.includes('retained fix'), result);
+  }
+});
