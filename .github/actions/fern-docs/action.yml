@@ -11,7 +11,7 @@ inputs:
     default: '.'
   fern-cli-version:
     description: Exact Fern version matching fern/fern.config.json
-    required: true
+    default: '5.186.0'
   docs-directory:
     description: Documentation directory for repositories without root navigation
     default: docs

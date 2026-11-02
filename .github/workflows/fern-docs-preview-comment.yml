@@ -14,8 +14,9 @@ on:
         type: string
         default: ubuntu-24.04
       fern_cli_version:
+        description: Exact Fern CLI version matching fern/fern.config.json
         type: string
-        required: true
+        default: '5.186.0'
       navigation_file:
         type: string
         default: ''

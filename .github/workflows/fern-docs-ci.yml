@@ -13,7 +13,8 @@ on:
         type: string
       fern_cli_version:
         description: "Exact Fern CLI version matching fern/fern.config.json"
-        required: true
+        required: false
+        default: '5.186.0'
         type: string
       docs_directory:
         description: "Caller-relative directory containing Markdown and MDX pages"

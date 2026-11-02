@@ -13,10 +13,11 @@ caller to the same reviewed full commit SHA.
 
 All four use `workflow_call` only. The composite action in this directory
 prepares and validates docs without publishing. Runners need Bash, Python 3.12+
-and Git. The action installs Node.js and the caller's exact Fern CLI version.
-That version must match `fern/fern.config.json`.
-This replaces the initial draft's acceptance of `latest`; update both pins when
-adopting the workflow. `docs_directory`, `docs_paths`, and Lychee arguments remain
+and Git. The action installs Node.js and Fern CLI. The workflows and composite
+action default to Fern `5.186.0`. Callers can override it with `fern_cli_version`
+(or `fern-cli-version` when using the composite directly). The selected version
+must be exact and match `fern/fern.config.json`; `latest` is rejected.
+`docs_directory`, `docs_paths`, and Lychee arguments remain
 relative to the caller root even when `fern_working_directory` is set.
 
 ## Identity validation
@@ -31,7 +32,6 @@ jobs:
     uses: dsx-ai-factory/dsx-github-actions/.github/workflows/fern-docs-ci.yml@REVIEWED_FULL_COMMIT_SHA
     with:
       runner: ubuntu-24.04
-      fern_cli_version: '5.186.0'
       navigation_file: index.yml
       docs_paths: |
         docs
