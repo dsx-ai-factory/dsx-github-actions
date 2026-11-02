@@ -12,6 +12,10 @@ highest earlier stable `vX.Y.Z` tag in the selected RC's ancestry to its exact
 commit. RC tags and moving major tags are excluded as baselines. The first
 stable release uses all reachable history.
 
+If the history includes a merge revert, the description adds a warning with
+links to the revert and merge commits. The generator cannot infer which branch
+changes the merge revert undid, so listed features and fixes may have been undone.
+
 The shared helper reads commit messages through the GitHub API and uses its
 own pinned generator dependencies; it does not load product release
 configuration or execute product code. Generation must succeed before the

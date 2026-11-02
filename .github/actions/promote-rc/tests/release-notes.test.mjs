@@ -106,3 +106,21 @@ test('keeps standalone reapplications and conventional revert messages', () => {
     assert.ok(result.includes('previously released feature'), result);
   }
 });
+
+test('warns about merge reverts whose branch features remain in the history', () => {
+  const mergeHash = '1'.padStart(40, 'a');
+  const revertHash = '0'.padStart(40, 'a');
+  for (const previousTag of ['v1.14.0', null]) {
+    const result = notes([
+      `Revert "Merge branch 'feature'"\n\nThis reverts commit ${mergeHash}, reversing\nchanges made to ${'b'.repeat(40)}.`,
+      "Merge branch 'feature'",
+      'feat: feature from reverted merge',
+      'fix: retained fix',
+    ], previousTag);
+    assert.ok(result.includes('### Merge revert warning'), result);
+    assert.ok(result.includes('may have been undone'), result);
+    assert.ok(result.includes(`https://github.com/example/product/commit/${revertHash}`), result);
+    assert.ok(result.includes(`https://github.com/example/product/commit/${mergeHash}`), result);
+    assert.ok(result.includes('retained fix'), result);
+  }
+});
