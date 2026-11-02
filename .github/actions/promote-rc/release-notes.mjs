@@ -32,9 +32,8 @@ const mergeReverts = input.commits.flatMap(({ hash, message }) => {
   const match = /^This reverts commit ([0-9a-f]{4,40})(?: \([^\r\n]*\))?, reversing\r?\nchanges made to [0-9a-f]{4,40}(?: \([^\r\n]*\))?\./m.exec(message);
   if (!match) return [];
   const merge = match[1];
-  // --reference (or revert.reference=true) may abbreviate the target hash.
-  // Always link the revert itself; only link a target with a complete identity.
-  const target = merge.length === 40 ? `[${merge.slice(0, 7)}](${repository}/commit/${merge})` : `\`${merge}\``;
+  // GitHub commit URLs also resolve Git's abbreviated --reference hashes.
+  const target = `[${merge.slice(0, 7)}](${repository}/commit/${merge})`;
   return [`* [${hash.slice(0, 7)}](${repository}/commit/${hash}) (reverts merge ${target})`];
 });
 const warning = mergeReverts.length ? [

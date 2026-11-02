@@ -136,8 +136,7 @@ test('warns about reference-format merge reverts with abbreviated targets', () =
     assert.ok(result.includes('### Merge revert warning'), result);
     assert.ok(result.includes('may have been undone'), result);
     assert.ok(result.includes(`https://github.com/example/product/commit/${'0'.padStart(40, 'a')}`), result);
-    assert.ok(result.includes('reverts merge `f707745`'), result);
-    assert.ok(!result.includes('/commit/f707745'), result);
+    assert.ok(result.includes('reverts merge [f707745](https://github.com/example/product/commit/f707745)'), result);
     assert.ok(result.includes('retained fix'), result);
   }
 });
