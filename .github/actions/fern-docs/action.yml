@@ -16,8 +16,8 @@ inputs:
     description: Documentation directory for repositories without root navigation
     default: docs
   docs-paths:
-    description: Markdown files or directories to check, one per line
-    default: docs
+    description: Markdown files or directories to check, one per line; defaults to docs-directory
+    default: ''
   navigation-file:
     description: Set to index.yml for navigation listing pages across the repository
     default: ''

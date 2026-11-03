@@ -183,11 +183,11 @@ jobs:
           BASE_URL="${PREVIEW_URL%/}"
           FILES_PARAM=$(echo "$CHANGED_FILES" | tr '\n' ',' | sed 's/,$//' \
             | python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read().strip(), safe=',/'))")
-          RESPONSE=$(curl -sf "${PREVIEW_URL}/api/fern-docs/get-slug-for-file?files=${FILES_PARAM}" 2>/dev/null) || {
+          RESPONSE=$(curl -sf --max-time 30 "${PREVIEW_URL}/api/fern-docs/get-slug-for-file?files=${FILES_PARAM}" 2>/dev/null) || {
             echo "page_links=" >> "$GITHUB_OUTPUT"; exit 0
           }
 
-          PAGE_LINKS=$(printf '%s' "$RESPONSE" | python3 _fern-shared/.github/actions/fern-docs/scripts/page-links.py "$BASE_URL")
+          PAGE_LINKS=$(printf '%s' "$RESPONSE" | python3 _fern-shared/.github/actions/fern-docs/scripts/page-links.py "$BASE_URL" 2>/dev/null) || PAGE_LINKS=""
 
           if [ -n "$PAGE_LINKS" ]; then
             { delimiter="fern-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"; echo "page_links<<$delimiter"; echo "$PAGE_LINKS"; echo "$delimiter"; } >> "$GITHUB_OUTPUT"

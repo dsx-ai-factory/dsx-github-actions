@@ -122,7 +122,7 @@ def main():
         stage(source, args.destination.absolute(), nav, docs)
     else:
         prepare(source, os.environ['FERN_CLI_VERSION'], nav, docs,
-                os.environ.get('DOCS_PATHS', docs),
+                os.environ.get('DOCS_PATHS') or docs,
                 os.environ.get('FROZEN_VERSIONS') == 'true',
                 os.environ.get('CHECK_MDX', 'true') == 'true',
                 os.environ.get('FERN_WORKING_DIRECTORY', '.'))

@@ -80,6 +80,20 @@ class FernTest(unittest.TestCase):
         self.write('cmd/README.md', '# Invalid { MDX\n')
         self.assertIn('bare {', self.prepare(False).stdout)
 
+    def test_custom_docs_directory_is_default_mdx_path(self):
+        (self.root / 'docs').rename(self.root / 'content')
+        self.write('fern/docs.yml', 'navigation:\n  - page: Overview\n    path: ../content/overview.md\n')
+        default_paths = self.execute([
+            'yq', '-r', '.inputs.docs-paths.default', str(SCRIPTS.parent / 'action.yml'),
+        ]).stdout.strip()
+        settings = {'NAVIGATION_FILE': '', 'DOCS_DIRECTORY': 'content', 'DOCS_PATHS': default_paths}
+        self.prepare(**settings)
+
+        self.write('docs/unrelated.md', '# Unrelated valid page\n')
+        self.write('content/overview.md', '# Invalid { MDX\n')
+        self.assertIn('bare {', self.prepare(False, **settings).stdout)
+        self.prepare(**(settings | {'DOCS_PATHS': 'docs'}))
+
     def test_wrong_cli_version_is_rejected(self):
         for version in ['latest', '5.187.0']:
             with self.subTest(version=version):
@@ -303,6 +317,42 @@ class FernTest(unittest.TestCase):
         self.assertIn('[guide/start](https://preview.docs.buildwithfern.com/product/guide/start)', result)
         self.assertIn(r'x\]\(https://example.invalid\)', result)
         self.assertIn('x%5D%28https%3A//example.invalid%29', result)
+
+    def test_preview_page_links_are_optional(self):
+        workflow = SCRIPTS.parents[2] / 'workflows/fern-docs-preview-comment.yml'
+        step = self.execute([
+            'yq', '-r', '.jobs.preview.steps[] | select(.id == "page-links") | .run', str(workflow),
+        ]).stdout
+        (self.root / '_fern-shared').symlink_to(SCRIPTS.parents[3], target_is_directory=True)
+        self.write('preview/preview-metadata/changed_md_files', 'docs/overview.md\n')
+        output = self.root / 'github-output'
+        response = self.root / 'response.json'
+        curl_args = self.root / 'curl-args'
+        mock_curl = 'curl() { printf "%s\\n" "$@" > "$CURL_ARGS"; cat "$CURL_RESPONSE"; return "$CURL_EXIT"; }\n'
+        for name, body, status, has_links in [
+            ('valid', '{"mappings":[{"slug":"guide/start"}]}', 0, True),
+            ('no mappings', '{}', 0, False),
+            ('invalid JSON', '<html>Proxy response</html>', 0, False),
+            ('array', '[]', 0, False),
+            ('null mappings', '{"mappings":null}', 0, False),
+            ('transport failure', '', 7, False),
+            ('timeout', '', 28, False),
+        ]:
+            with self.subTest(response=name):
+                response.write_text(body)
+                output.write_text('')
+                self.execute(['bash', '--noprofile', '--norc', '-eo', 'pipefail', '-c', mock_curl + step],
+                             PREVIEW_URL='https://example.buildwithfern.com', GITHUB_OUTPUT=str(output),
+                             CURL_RESPONSE=str(response), CURL_EXIT=str(status), CURL_ARGS=str(curl_args))
+                if has_links:
+                    self.assertIn('[guide/start](https://example.buildwithfern.com/guide/start)', output.read_text())
+                else:
+                    self.assertEqual(output.read_text(), 'page_links=\n')
+                arguments = curl_args.read_text().splitlines()
+                self.assertIn('--max-time', arguments)
+                timeout = float(arguments[arguments.index('--max-time') + 1])
+                self.assertGreater(timeout, 0)
+                self.assertLess(timeout, 15 * 60)
 
 
 if __name__ == '__main__':
