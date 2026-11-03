@@ -136,6 +136,102 @@ class FernTest(unittest.TestCase):
         self.assertEqual((destination / 'tools/script').read_text(), 'trusted tool')
         self.assertEqual((destination / 'cmd/README.md').read_text(), '# Controller\n')
 
+    def test_directory_overlay_replaces_deleted_and_renamed_pages(self):
+        destination = Path(self.tmp.name) / 'trusted'
+        for name, content in {
+            'docs/deleted.md': '# Deleted\n',
+            'docs/old-name.md': '# Renamed\n',
+            'docs/overview.md': '# Old overview\n',
+            'fern/docs.yml': 'trusted configuration',
+            'tools/script': 'trusted tool',
+        }.items():
+            path = destination / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        self.write('docs/new-name.md', '# Renamed\n')
+        self.execute([sys.executable, str(SCRIPTS / 'prepare.py'), 'stage', '.',
+                      '--destination', str(destination)], NAVIGATION_FILE='')
+        self.assertEqual({path.name for path in (destination / 'docs').iterdir()},
+                         {'overview.md', 'new-name.md'})
+        self.assertEqual((destination / 'docs/overview.md').read_text(), '# Original overview\n')
+        self.assertEqual((destination / 'docs/new-name.md').read_text(), '# Renamed\n')
+        self.assertEqual((destination / 'fern/docs.yml').read_text(), 'trusted configuration')
+        self.assertEqual((destination / 'tools/script').read_text(), 'trusted tool')
+
+    def test_directory_overlay_rejects_destination_symlinks_before_deletion(self):
+        self.write('content/pages/start.md', '# Start\n')
+        cases = [
+            ('docs', 'docs', 'tools'),
+            ('content/pages', 'content', 'tools'),
+            ('docs', 'docs', 'missing'),
+            ('content/pages', 'content', 'missing'),
+        ]
+        for index, (directory, link, link_target) in enumerate(cases):
+            with self.subTest(directory=directory, target=link_target):
+                destination = Path(self.tmp.name) / f'trusted-{index}'
+                (destination / 'tools/pages').mkdir(parents=True)
+                protected = destination / 'tools/pages/keep.md'
+                protected.write_text('trusted tool')
+                (destination / link).symlink_to(link_target, target_is_directory=True)
+                self.execute([sys.executable, str(SCRIPTS / 'prepare.py'), 'stage', '.',
+                              '--destination', str(destination)], False,
+                             NAVIGATION_FILE='', DOCS_DIRECTORY=directory)
+                self.assertEqual(protected.read_text(), 'trusted tool')
+                self.assertTrue((destination / link).is_symlink())
+                self.assertFalse((destination / 'missing').exists())
+
+    def test_directory_overlay_rejects_a_symlink_checkout(self):
+        destination = Path(self.tmp.name) / 'trusted'
+        (destination / 'docs').mkdir(parents=True)
+        protected = destination / 'docs/keep.md'
+        protected.write_text('keep')
+        alias = Path(self.tmp.name) / 'alias'
+        alias.symlink_to(destination, target_is_directory=True)
+        self.execute([sys.executable, str(SCRIPTS / 'prepare.py'), 'stage', '.',
+                      '--destination', str(alias)], False, NAVIGATION_FILE='')
+        self.assertEqual(protected.read_text(), 'keep')
+
+    def test_directory_overlay_rejects_overlap_without_removing_source(self):
+        for destination in [self.root, self.root / 'docs/nested']:
+            with self.subTest(destination=destination):
+                self.execute([sys.executable, str(SCRIPTS / 'prepare.py'), 'stage', '.',
+                              '--destination', str(destination)], False, NAVIGATION_FILE='')
+                self.assertEqual((self.root / 'docs/overview.md').read_text(), '# Original overview\n')
+        self.assertFalse((self.root / 'docs/nested').exists())
+        # The destination docs directory must not contain the source checkout.
+        destination = Path(self.tmp.name) / 'ancestor'
+        source = destination / 'docs/repo'
+        (source / 'docs').mkdir(parents=True)
+        protected = source / 'docs/keep.md'
+        protected.write_text('keep')
+        self.execute([sys.executable, str(SCRIPTS / 'prepare.py'), 'stage', str(source),
+                      '--destination', str(destination)], False, NAVIGATION_FILE='')
+        self.assertEqual(protected.read_text(), 'keep')
+
+    def test_directory_overlay_checks_source_before_removing_destination(self):
+        destination = Path(self.tmp.name) / 'trusted'
+        (destination / 'docs').mkdir(parents=True)
+        protected = destination / 'docs/keep.md'
+        protected.write_text('keep')
+        (self.root / 'docs/link.md').symlink_to('../cmd/README.md')
+        self.execute([sys.executable, str(SCRIPTS / 'prepare.py'), 'stage', '.',
+                      '--destination', str(destination)], False, NAVIGATION_FILE='')
+        self.assertEqual(protected.read_text(), 'keep')
+
+    def test_directory_overlay_does_not_hide_a_deleted_navigation_page(self):
+        destination = Path(self.tmp.name) / 'trusted'
+        (destination / 'fern').mkdir(parents=True)
+        (destination / 'docs').mkdir()
+        (destination / 'docs/deleted.md').write_text('# Deleted\n')
+        (destination / 'fern/docs.yml').write_text('navigation:\n  - page: Deleted\n    path: ../docs/deleted.md\n')
+        (destination / 'fern/fern.config.json').write_text('{"organization":"nvidia","version":"5.186.0"}\n')
+        self.execute([sys.executable, str(SCRIPTS / 'prepare.py'), 'stage', '.',
+                      '--destination', str(destination)], NAVIGATION_FILE='')
+        result = self.execute([sys.executable, str(SCRIPTS / 'prepare.py'), 'check', str(destination)], False,
+                              NAVIGATION_FILE='', DOCS_PATHS='docs')
+        self.assertIn("path '../docs/deleted.md' leaves the docs directory", result.stdout)
+        self.assertFalse((destination / 'docs/deleted.md').exists())
+
     def test_frozen_content_uses_tag_and_pins_non_page_links(self):
         self.write('sample.yaml', 'kind: Example\n')
         self.write('docs/overview.md', '# Release {example}\n[Sample](../sample.yaml)\n[Controller](../cmd/README.md)\n```\n{code}\n```\n')

@@ -72,10 +72,21 @@ branch, then overlays only staged pages. PR edits to trusted configuration or
 tools are intentionally not previewed before merge. Copy-pr-bot vetting remains
 required: the path checker is defense in depth, not an MDX sandbox.
 
-Previews use `shared-fern-OWNER-REPO-pr-N` (lowercase) by default, separate from
-the old `pr-N` IDs. Set a distinct `preview_namespace` and `post_comment: false`
-for an isolated preview test. Reusing the same namespace/repository/PR tuple
-updates that preview. The shared comment marker is `<!-- shared-fern-preview -->`.
+For directory layouts such as Exchange, the staged PR docs directory replaces
+the default-branch docs directory, including deletions and renames. Navigation
+in `fern/docs.yml` still comes from the default branch: PR navigation edits are
+not previewed. If that navigation references a deleted PR page, validation fails.
+Confirm this limitation with the caller's owners before migration.
+
+Previews use `shared-fern-rREPOSITORY_ID-pr-N` by default. The numeric GitHub
+ID identifies the repository running the workflow, so independent runs in a
+fork and upstream have separate previews. Set a distinct `preview_namespace`
+and `post_comment: false` for an isolated preview test.
+Namespaces use lowercase letters, digits, and single hyphens between parts.
+Before publication, the workflow rejects an `ORG-preview-ID` label longer than
+62 characters, the truncation limit in Fern CLI 5.186.0. Shorten the namespace
+if necessary. Reusing the same namespace/repository/PR tuple updates that
+preview. The shared comment marker is `<!-- shared-fern-preview -->`.
 See [Fern's preview behavior](https://buildwithfern.com/learn/docs/preview-publish/preview-changes).
 
 The caller's `workflow_run` listener must exist on its default branch. A new
@@ -88,6 +99,12 @@ same migration PR that enables its shared replacement; do not run two publishers
 and checks the site, and makes no Fern publication or registry PR. Omit
 `FERN_TOKEN` during these tests. An ordinary feature-branch push has no publishing
 trigger in the shared repository.
+
+The shared publisher owns release concurrency with group `shared-fern-publish`,
+`queue: max`, and `cancel-in-progress: false`. Thin publish callers must omit
+concurrency at both workflow and calling-job level. A caller-level group can
+cancel active or pending releases before the shared queue can process them.
+This rule does not change validation workflow concurrency.
 
 Real publishing requires `publish: true`, `FERN_TOKEN`, and a release/tag event
 or manual dispatch on the caller's default branch. A manual dispatch from a

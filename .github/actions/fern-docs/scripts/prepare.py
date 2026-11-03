@@ -32,6 +32,8 @@ def relative_path(root, value):
 
 
 def stage(source, destination, navigation, docs_directory, with_fern=False, fern_working_directory='.'):
+    source = source.absolute()
+    destination = destination.absolute()
     if navigation:
         # Identity currently publishes from this root navigation file.
         if navigation != 'index.yml':
@@ -46,7 +48,21 @@ def stage(source, destination, navigation, docs_directory, with_fern=False, fern
         if any(path.is_symlink() for path in docs.rglob('*')):
             raise ValueError('Documentation contains a symbolic link')
         target = relative_path(destination, docs_directory)
-        shutil.copytree(docs, target, symlinks=True, dirs_exist_ok=True)
+        # Check every path component before deleting, including dangling links.
+        # A destination such as content -> tools must not bypass the root guard.
+        for root in (source, destination):
+            path = root
+            for part in ('.', *Path(docs_directory).parts):
+                path = path / part
+                if path.is_symlink():
+                    raise ValueError('Documentation path contains a symbolic link')
+        if docs.resolve().is_relative_to(target.resolve()) or target.resolve().is_relative_to(docs.resolve()):
+            raise ValueError('Source and destination documentation directories overlap')
+        if target.exists():
+            if not target.is_dir():
+                raise ValueError('Documentation destination is not a directory')
+            shutil.rmtree(target)
+        shutil.copytree(docs, target, symlinks=True)
     if with_fern:
         config = relative_path(source, fern_working_directory) / 'fern'
         target = relative_path(destination, fern_working_directory) / 'fern'
@@ -103,7 +119,7 @@ def main():
     if args.operation == 'stage':
         if args.destination is None:
             raise ValueError('Missing staging destination')
-        stage(source, args.destination.resolve(), nav, docs)
+        stage(source, args.destination.absolute(), nav, docs)
     else:
         prepare(source, os.environ['FERN_CLI_VERSION'], nav, docs,
                 os.environ.get('DOCS_PATHS', docs),

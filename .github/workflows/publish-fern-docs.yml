@@ -48,8 +48,9 @@ permissions:
 
 # Runs queue instead of cancelling. A cancelled run could skip the registry PR
 # and leave its version permanently unregistered.
+# Callers must omit workflow-level and calling-job publish concurrency.
 concurrency:
-  group: fern-publish
+  group: shared-fern-publish
   queue: max
   cancel-in-progress: false
 

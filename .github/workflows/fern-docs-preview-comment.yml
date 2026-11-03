@@ -136,18 +136,23 @@ jobs:
           frozen-versions: ${{ inputs.frozen_versions }}
           native-checks: ${{ inputs.native_checks }}
 
+      - name: Validate the preview ID before publishing
+        id: preview-id
+        env:
+          PR_NUMBER: ${{ steps.metadata.outputs.pr_number }}
+          PREVIEW_NAMESPACE: ${{ inputs.preview_namespace }}
+        run: |
+          PREVIEW_ID=$(python3 _fern-shared/.github/actions/fern-docs/scripts/preview-id.py trusted/fern/fern.config.json)
+          echo "preview_id=$PREVIEW_ID" >> "$GITHUB_OUTPUT"
+
       - name: Generate preview URL
         id: generate-docs
         env:
           FERN_TOKEN: ${{ secrets.FERN_TOKEN }}
-          PR_NUMBER: ${{ steps.metadata.outputs.pr_number }}
-          PREVIEW_NAMESPACE: ${{ inputs.preview_namespace }}
+          PREVIEW_ID: ${{ steps.preview-id.outputs.preview_id }}
         working-directory: ./trusted/fern
         run: |
           set -o pipefail
-          [[ "$PREVIEW_NAMESPACE" =~ ^[a-z0-9][a-z0-9-]*$ ]] || exit 1
-          PREVIEW_ID="${PREVIEW_NAMESPACE}-${GITHUB_REPOSITORY//\//-}-pr-${PR_NUMBER}"
-          PREVIEW_ID="${PREVIEW_ID,,}"
           fern generate --docs --preview --id "$PREVIEW_ID" 2>&1 | tee "$RUNNER_TEMP/fern-output.log"
           # Fern prints "Published docs to URL", sometimes followed by " (URL)".
           URL=$(sed -n 's/.*Published docs to \(https:[^[:space:]]*\).*/\1/p' "$RUNNER_TEMP/fern-output.log" | tail -1)
