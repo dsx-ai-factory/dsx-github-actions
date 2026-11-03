@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Copy the Fern navigation and the pages it lists from SRC into DEST.
+
+index.yml at the repository root names pages anywhere in the repository, so the
+published tree is not a single directory. This script copies index.yml and every
+listed page to the same relative path under DEST. With --with-fern it also copies
+the fern/ directory.
+
+It rejects a page path that Fern could use to read a file outside the published
+set: a ".." segment, an absolute or backslash path, a suffix other than .md or
+.mdx, a page that resolves under fern/, tools/, or .github/, a symbolic link, and
+a file that does not exist. DEST may already exist, which lets the preview job overlay a
+pull request's pages onto a trusted checkout.
+
+Usage: stage-fern-site [--with-fern] SRC DEST
+"""
+
+from __future__ import annotations
+
+import argparse
+import posixpath
+import re
+import shutil
+import sys
+from pathlib import Path
+
+PATH_LINE = re.compile(r"^\s*(?:-\s+)?path:\s*(\S.*?)\s*$")
+PAGE_SUFFIXES = {".md", ".mdx"}
+RESERVED_ROOTS = {"fern", "tools", ".github", ".git"}
+
+
+def listed_paths(index: Path) -> list[str]:
+    paths = []
+    for line in index.read_text(encoding="utf-8").splitlines():
+        match = PATH_LINE.match(line)
+        if match:
+            paths.append(re.split(r"\s+#", match.group(1), maxsplit=1)[0].strip("'\""))
+    return paths
+
+
+def problem(src: Path, page: str) -> str | None:
+    parts = re.split(r"[\\/]", page)
+    if "\\" in page or page.startswith(("/", "~")) or ".." in parts:
+        return "path leaves the repository or is not relative"
+    if Path(page).suffix.lower() not in PAGE_SUFFIXES:
+        return "page is not a .md or .mdx file"
+    full = src / page
+    if full.is_symlink():
+        return "page is a symbolic link"
+    if not full.is_file():
+        return "page does not exist"
+    # Check the resolved location, not the written path. A "./fern/x.md" prefix or
+    # a symlinked directory would otherwise reach a reserved directory.
+    root, resolved = src.resolve(), full.resolve()
+    if root not in resolved.parents:
+        return "page resolves outside the source tree"
+    top = resolved.relative_to(root).parts[0]
+    if top in RESERVED_ROOTS:
+        return f"page is under reserved directory {top}/"
+    return None
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("src", type=Path)
+    parser.add_argument("dest", type=Path)
+    parser.add_argument("--with-fern", action="store_true", help="also copy fern/")
+    args = parser.parse_args()
+
+    index = args.src / "index.yml"
+    if not index.is_file() or index.is_symlink():
+        print(f"{index}: missing or a symbolic link", file=sys.stderr)
+        return 1
+
+    pages = listed_paths(index)
+    issues = [f"{index}: {page}: {why}" for page in pages if (why := problem(args.src, page))]
+    if issues:
+        print("\n".join(issues), file=sys.stderr)
+        return 1
+
+    args.dest.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(index, args.dest / "index.yml")
+    for page in pages:
+        target = args.dest / posixpath.normpath(page)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(args.src / page, target)
+    if args.with_fern:
+        shutil.copytree(args.src / "fern", args.dest / "fern", symlinks=True, dirs_exist_ok=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

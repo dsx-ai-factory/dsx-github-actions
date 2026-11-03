@@ -20,6 +20,13 @@ Product repositories pinned to an older shared-actions SHA need a pin update.
 Rebuild their artifacts with the patched toolchain; existing binaries do not
 change when the shared actions are updated.
 
+## Fern documentation
+
+Use the shared validation, preview collection, preview publication, and stable
+release workflows described in [the Fern guide](../actions/fern-docs/README.md).
+It includes Identity's multi-directory navigation and frozen-version inputs,
+Exchange's directory layout, token boundaries, and safe test settings.
+
 ## Release Candidate Publish
 
 Use [`release-candidate-publish.yml`](release-candidate-publish.yml) to publish

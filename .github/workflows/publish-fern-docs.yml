@@ -1,0 +1,248 @@
+# Copyright 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Adapted from nvidia-workload-identity's publish workflow. Callers own triggers.
+name: Publish Fern Docs
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-24.04
+      fern_cli_version:
+        description: Exact Fern CLI version matching fern/fern.config.json
+        type: string
+        default: '5.186.0'
+      tag:
+        description: Stable tag; empty resolves from the release event or latest release
+        type: string
+        default: ''
+      navigation_file:
+        type: string
+        default: index.yml
+      docs_directory:
+        type: string
+        default: docs
+      docs_paths:
+        type: string
+        default: ''
+      register_versions:
+        description: Register and rebuild frozen versions; false publishes the release tree
+        type: boolean
+        default: true
+      native_checks:
+        type: boolean
+        default: true
+      max_versions:
+        type: number
+        default: 3
+      publish:
+        description: Explicitly enable Fern publication and the version registry PR
+        type: boolean
+        default: false
+    secrets:
+      FERN_TOKEN:
+        required: false
+permissions:
+  contents: write
+  pull-requests: write
+
+# Runs queue instead of cancelling. A cancelled run could skip the registry PR
+# and leave its version permanently unregistered.
+# Callers must omit workflow-level and calling-job publish concurrency.
+concurrency:
+  group: shared-fern-publish
+  queue: max
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+    working-directory: source
+
+env:
+  MAX_VERSIONS: ${{ inputs.max_versions }}
+
+jobs:
+  publish:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require reusable workflow SHA
+        if: job.workflow_sha == ''
+        working-directory: .
+        run: |
+          echo "::error::Reusable workflow SHA is unavailable"
+          exit 1
+      - name: Checkout shared tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: dsx-ai-factory/dsx-github-actions
+          ref: ${{ job.workflow_sha }}
+          path: _fern-shared
+          persist-credentials: false
+      - name: Install yq for version registration
+        if: inputs.register_versions
+        uses: dcarbone/install-yq-action@4075b4dca348d74bd83f2bf82d30f25d7c54539b # v1.3.1
+
+      - name: Resolve target tag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          REGISTER_VERSIONS: ${{ inputs.register_versions }}
+          NAVIGATION_FILE: ${{ inputs.navigation_file }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          set -eo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            TAG="${RELEASE_TAG}"
+          elif [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          elif [ -n "${INPUT_TAG}" ]; then
+            TAG="${INPUT_TAG}"
+          else
+            TAG=$(gh release view --repo "${GITHUB_REPOSITORY}" --json tagName -q .tagName)
+          fi
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "::error::Could not determine the release tag"
+            exit 1
+          fi
+          # Release candidates are not published.
+          if [ "${RELEASE_PRERELEASE}" = "true" ] || [[ "$TAG" == *-* ]]; then
+            echo "::notice::Skipping ${TAG}. Only stable releases are published."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '${TAG}' is not a stable semver tag (expected vMAJOR.MINOR.PATCH)"
+            exit 1
+          fi
+          if ! git show-ref --verify --quiet "refs/tags/${TAG}"; then
+            echo "::error::Tag '${TAG}' does not exist in this repository"
+            exit 1
+          fi
+          if [[ "$REGISTER_VERSIONS" == true && "$NAVIGATION_FILE" != index.yml ]]; then
+            echo "::error::Version registration requires root index.yml"
+            exit 1
+          fi
+          if ! [[ "$MAX_VERSIONS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::max_versions must be a positive integer"
+            exit 1
+          fi
+          if [[ "$REGISTER_VERSIONS" == true ]] && ! git cat-file -e "refs/tags/${TAG}:index.yml" 2>/dev/null; then
+            echo "::error::Tag '${TAG}' has no index.yml, so its docs cannot be registered"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "Resolved target tag: $TAG"
+
+      - name: Require a trusted release source before publishing
+        if: inputs.publish && steps.resolve.outputs.publish == 'true'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TAG_VERSION: ${{ steps.resolve.outputs.tag }}
+        run: bash ../_fern-shared/.github/actions/fern-docs/scripts/require-publish-event.sh
+
+      - name: Require previous registry PRs to be merged before publishing
+        if: inputs.publish && inputs.register_versions && steps.resolve.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_VERSION: ${{ steps.resolve.outputs.tag }}
+        run: |
+          pending=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
+            --jq '.[] | select(.head.repo.full_name == .base.repo.full_name) | .head.ref' \
+            | awk -v current="docs/fern-register-${TAG_VERSION}" '/^docs\/fern-register-/ && $0 != current')
+          if [[ -n "$pending" ]]; then
+            echo "::error::Merge the earlier Fern registry PR before publishing another version"
+            exit 1
+          fi
+
+      - name: Use the release tree for an unversioned site
+        if: ${{ !inputs.register_versions && steps.resolve.outputs.publish == 'true' }}
+        env:
+          TAG_VERSION: ${{ steps.resolve.outputs.tag }}
+        run: git checkout --detach "refs/tags/${TAG_VERSION}"
+
+      - name: Register and prune frozen versions
+        if: inputs.register_versions && steps.resolve.outputs.publish == 'true'
+        env:
+          TAG_VERSION: ${{ steps.resolve.outputs.tag }}
+        run: bash ../_fern-shared/.github/actions/fern-docs/scripts/register-version.sh
+
+      - name: Prepare and validate the release documentation
+        if: steps.resolve.outputs.publish == 'true'
+        uses: ./_fern-shared/.github/actions/fern-docs
+        with:
+          working-directory: source
+          fern-cli-version: ${{ inputs.fern_cli_version }}
+          docs-directory: ${{ inputs.docs_directory }}
+          docs-paths: ${{ inputs.docs_paths || inputs.docs_directory }}
+          navigation-file: ${{ inputs.navigation_file }}
+          frozen-versions: ${{ inputs.register_versions }}
+          native-checks: ${{ inputs.native_checks }}
+
+      - name: Stamp newest version as Latest
+        if: inputs.register_versions && steps.resolve.outputs.publish == 'true'
+        run: |
+          cp fern/docs.yml "$RUNNER_TEMP/docs.yml.preStamp"
+          NEWEST=$(yq '.products[0].versions[0].display-name' fern/docs.yml)
+          if [ -n "$NEWEST" ] && [ "$NEWEST" != "null" ]; then
+            export NEWEST
+            yq -i '.products[0].versions[0].display-name = "Latest · " + env(NEWEST)' fern/docs.yml
+          fi
+          echo "--- docs.yml versions after stamp ---"
+          yq '.products[0].versions[].display-name' fern/docs.yml
+
+      - name: Publish docs
+        if: inputs.publish && steps.resolve.outputs.publish == 'true'
+        env:
+          FERN_TOKEN: ${{ secrets.FERN_TOKEN }}
+        working-directory: ./source/fern
+        run: |
+          set -eo pipefail
+          test -n "$FERN_TOKEN" || { echo "::error::FERN_TOKEN is required to publish"; exit 1; }
+          fern generate --docs 2>&1 | tee "$RUNNER_TEMP/fern-output.log"
+          # Fern prints "Published docs to URL", sometimes followed by " (URL)".
+          URL=$(sed -n 's/.*Published docs to \(https:[^[:space:]]*\).*/\1/p' "$RUNNER_TEMP/fern-output.log" | tail -1)
+          if [ -n "$URL" ]; then
+            echo "### Published: [$URL]($URL)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Restore unstamped docs.yml for persistence
+        if: inputs.register_versions && steps.resolve.outputs.publish == 'true'
+        run: cp "$RUNNER_TEMP/docs.yml.preStamp" fern/docs.yml
+
+      # A PR opened with GITHUB_TOKEN does not start other workflows, so Fern Check
+      # does not run on it. signoff satisfies the DCO check.
+      - name: Open PR for version registry changes
+        if: inputs.publish && inputs.register_versions && steps.resolve.outputs.publish == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          path: source
+          base: ${{ github.event.repository.default_branch }}
+          branch: docs/fern-register-${{ steps.resolve.outputs.tag }}
+          delete-branch: true
+          sign-commits: true
+          signoff: true
+          commit-message: "docs(NO-REF): register Fern docs ${{ steps.resolve.outputs.tag }}"
+          title: "docs(NO-REF): register Fern docs ${{ steps.resolve.outputs.tag }}"
+          body: |
+            Registers `${{ steps.resolve.outputs.tag }}` in the Fern docs version registry, keeping the latest ${{ env.MAX_VERSIONS }} versions.
+
+            Generated by the `Publish Fern Docs` workflow.
+          add-paths: |
+            fern/versions/v*.yml
+            fern/docs.yml
+
+      - name: Report validation-only run
+        if: ${{ !inputs.publish && steps.resolve.outputs.publish == 'true' }}
+        run: echo 'Validated release docs. No Fern publication or registry PR was created.' >> "$GITHUB_STEP_SUMMARY"

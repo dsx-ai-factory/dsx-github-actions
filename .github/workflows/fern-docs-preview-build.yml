@@ -1,0 +1,72 @@
+# Copyright 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Collect Fern preview pages
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-24.04
+      navigation_file:
+        description: Set to index.yml for repository-wide navigation
+        type: string
+        default: ''
+      docs_directory:
+        type: string
+        default: docs
+permissions:
+  contents: read
+jobs:
+  collect:
+    if: github.event_name == 'push' && startsWith(github.ref_name, 'pull-request/')
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Require reusable workflow SHA
+        if: job.workflow_sha == ''
+        run: |
+          echo "::error::Reusable workflow SHA is unavailable"
+          exit 1
+      - name: Checkout shared tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: dsx-ai-factory/dsx-github-actions
+          ref: ${{ job.workflow_sha }}
+          path: _fern-shared
+          persist-credentials: false
+      - name: Checkout caller pages
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: source
+      - name: Save PR metadata
+        working-directory: source
+        env:
+          BRANCH_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          [[ "$BRANCH_NAME" =~ ^pull-request/[0-9]+$ ]] || exit 1
+          mkdir -p ../preview-metadata
+          echo "${BRANCH_NAME#pull-request/}" > ../preview-metadata/pr_number
+          git diff --name-only "origin/${DEFAULT_BRANCH}...HEAD" -- '*.md' '*.mdx' > ../preview-metadata/changed_md_files
+      - name: Stage pages using shared tools
+        env:
+          NAVIGATION_FILE: ${{ inputs.navigation_file }}
+          DOCS_DIRECTORY: ${{ inputs.docs_directory }}
+        run: python3 _fern-shared/.github/actions/fern-docs/scripts/prepare.py stage source --destination site
+      - name: Upload pages and metadata
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: shared-fern-preview
+          archive: true
+          path: |
+            site/
+            preview-metadata/
+          retention-days: 1
+          if-no-files-found: error

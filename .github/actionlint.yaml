@@ -19,6 +19,10 @@ paths:
     ignore:
       # Remove when actionlint supports the called workflow's job.workflow_sha.
       - '^property "workflow_sha" is not defined in object type \{check_run_id: number; container:'
+  .github/workflows/fern-docs-ci.yml:
+    ignore:
+      # Remove when actionlint supports the called workflow's job.workflow_sha.
+      - '^property "workflow_sha" is not defined in object type \{check_run_id: number; container:'
   .github/workflows/release-candidate.yml:
     ignore:
       # GitHub.com supports workflow identity; actionlint 1.7.12 does not yet.
@@ -31,3 +35,17 @@ paths:
     ignore:
       # Same workflow identity properties as the source-only RC publisher.
       - '^property "workflow_(sha|repository)" is not defined in object type \{check_run_id: number; container:'
+  .github/workflows/fern-docs-preview-build.yml:
+    ignore:
+      # Same called-workflow SHA property used by fern-docs-ci.yml.
+      - '^property "workflow_sha" is not defined in object type \{check_run_id: number; container:'
+  .github/workflows/fern-docs-preview-comment.yml:
+    ignore:
+      # Same called-workflow SHA property used by fern-docs-ci.yml.
+      - '^property "workflow_sha" is not defined in object type \{check_run_id: number; container:'
+  .github/workflows/publish-fern-docs.yml:
+    ignore:
+      # Same called-workflow SHA property used by fern-docs-ci.yml.
+      - '^property "workflow_sha" is not defined in object type \{check_run_id: number; container:'
+      # Same concurrency queue support used by build-cds-containers.yml.
+      - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'
