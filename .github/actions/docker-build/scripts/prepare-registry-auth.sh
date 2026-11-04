@@ -23,8 +23,12 @@ fi
 printf '{"auths":{}}\n' > "$authfile"
 chmod 600 "$authfile"
 [[ -f "$config" ]] || exit 0
-helper="$(jq -r --arg server "$server" '.credHelpers[$server] // .credsStore // ""' "$config" 2>/dev/null)" || fail
+helper="$(jq -er --arg server "$server" '
+  (.credHelpers[$server] // .credsStore // "") |
+  if type == "string" then . else error("Invalid credential helper") end
+' "$config" 2>/dev/null)" || fail
 if [[ -n "$helper" ]]; then
+  [[ "$helper" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || fail
   if ! credentials="$(printf '%s' "$server" | "docker-credential-$helper" get 2>/dev/null)"; then
     # Docker treats the standard helper "not found" response as anonymous.
     [[ "$credentials" == 'credentials not found in native keychain' ]] && exit 0

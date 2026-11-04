@@ -68,22 +68,29 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o /tmp
 # For internal GitLab runners, use the GitLab version of this container
 
 # kubectl (latest version: curl -sSL https://dl.k8s.io/release/stable.txt)
+# Update each download's SHA256 together with its version, using the official release.
 ARG KUBECTL_VERSION="1.35.4"
+ARG KUBECTL_SHA256="b529430df69a688fd61b64ad2299edb5fd71cb58be2a4779dba624c7d3510efd"
 RUN curl -fsSL -o kubectl "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+    && printf '%s  %s\n' "$KUBECTL_SHA256" kubectl | sha256sum -c - \
     && mv ./kubectl  /usr/local/bin/kubectl \
     && chmod +x /usr/local/bin/kubectl \
     && kubectl version --client
 
 # kubelogin
 ARG KUBELOGIN_VERSION="0.2.17"
+ARG KUBELOGIN_SHA256="9a5484504ab1c91cdafdcd55a9e439bb3f55a0fe29fe253a169df5538c0a2c86"
 RUN curl -fsSL -o kubelogin.zip "https://github.com/Azure/kubelogin/releases/download/v${KUBELOGIN_VERSION}/kubelogin-linux-amd64.zip" \
+    && printf '%s  %s\n' "$KUBELOGIN_SHA256" kubelogin.zip | sha256sum -c - \
     && unzip -j kubelogin.zip \
     && mv kubelogin /usr/local/bin/kubelogin \
     && kubelogin --version
 
 # yq
 ARG YQ_VERSION="4.52.5"
+ARG YQ_SHA256="75d893a0d5940d1019cb7cdc60001d9e876623852c31cfc6267047bc31149fa9"
 RUN curl -fsSL -o yq "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" \
+    && printf '%s  %s\n' "$YQ_SHA256" yq | sha256sum -c - \
     && mv ./yq /usr/local/bin/yq \
     && chmod +x /usr/local/bin/yq \
     && yq --version
@@ -122,7 +129,9 @@ RUN curl -sSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/
 
 # regctl
 ARG REGCTL_VERSION="0.11.3"
+ARG REGCTL_SHA256="ac9223101f1fad7beda29c4236d5119d72561a7258f0fd77ce4805bf6d86ab32"
 RUN curl -fsSL -o regctl "https://github.com/regclient/regclient/releases/download/v${REGCTL_VERSION}/regctl-linux-amd64" \
+    && printf '%s  %s\n' "$REGCTL_SHA256" regctl | sha256sum -c - \
     && mv ./regctl /usr/local/bin/regctl \
     && chmod +x /usr/local/bin/regctl \
     && regctl version
@@ -139,29 +148,39 @@ RUN curl -fsSL -o helm.tar.gz "https://get.helm.sh/helm-v${HELM_VERSION}-linux-a
 
 # terraform
 ARG TERRAFORM_VERSION="1.14.8"
-RUN curl -fsSL -o terraform.zip "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" && \
-    unzip terraform.zip && \
-    rm terraform.zip && \
-    mv ./terraform /usr/local/bin/terraform \
+ARG TERRAFORM_SHA256="56a5d12f47cbc1c6bedb8f5426ae7d5df984d1929572c24b56f4c82e9f9bf709"
+RUN curl -fsSL -o terraform.zip "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
+    && printf '%s  %s\n' "$TERRAFORM_SHA256" terraform.zip | sha256sum -c - \
+    && unzip terraform.zip \
+    && rm terraform.zip \
+    && mv ./terraform /usr/local/bin/terraform \
     && terraform --version
 
 # terragrunt
 ARG TERRAGRUNT_VERSION="1.0.1"
+ARG TERRAGRUNT_SHA256="8108fc7e8535a379413e41f12b310a9dae3327097ab729ba0cb46f62de357f06"
 RUN curl -fsSL -o terragrunt "https://github.com/gruntwork-io/terragrunt/releases/download/v${TERRAGRUNT_VERSION}/terragrunt_linux_amd64" \
+    && printf '%s  %s\n' "$TERRAGRUNT_SHA256" terragrunt | sha256sum -c - \
     && mv ./terragrunt /usr/local/bin/terragrunt \
     && chmod +x /usr/local/bin/terragrunt \
     && terragrunt --version
 
 # Bazel 6.5.0 is retained for KubeVirt compatibility (VMAAS-708, NID-8024).
 ARG BAZEL6_VERSION="6.5.0"
-RUN curl -fsSL -o /usr/local/bin/bazel-${BAZEL6_VERSION} "https://github.com/bazelbuild/bazel/releases/download/${BAZEL6_VERSION}/bazel-${BAZEL6_VERSION}-linux-x86_64" \
+ARG BAZEL6_SHA256="a40ac69263440761199fcb8da47ad4e3f328cbe79ffbf4ecc14e5ba252857307"
+RUN curl -fsSL -o bazel6 "https://github.com/bazelbuild/bazel/releases/download/${BAZEL6_VERSION}/bazel-${BAZEL6_VERSION}-linux-x86_64" \
+    && printf '%s  %s\n' "$BAZEL6_SHA256" bazel6 | sha256sum -c - \
+    && mv bazel6 /usr/local/bin/bazel-${BAZEL6_VERSION} \
     && chmod +x /usr/local/bin/bazel-${BAZEL6_VERSION} \
     && ln -s /usr/local/bin/bazel-${BAZEL6_VERSION} /usr/local/bin/bazel6 \
     && bazel6 --version
 
 # Bazel 8.8.2 is the default and includes a patched bundled JDK trust store.
 ARG BAZEL8_VERSION="8.8.2"
-RUN curl -fsSL -o /usr/local/bin/bazel-${BAZEL8_VERSION} "https://github.com/bazelbuild/bazel/releases/download/${BAZEL8_VERSION}/bazel-${BAZEL8_VERSION}-linux-x86_64" \
+ARG BAZEL8_SHA256="bf463ba0f5f782e8fe31071bd2b821c2f6a27f03e5bb62f0879e88cbf3656e04"
+RUN curl -fsSL -o bazel8 "https://github.com/bazelbuild/bazel/releases/download/${BAZEL8_VERSION}/bazel-${BAZEL8_VERSION}-linux-x86_64" \
+    && printf '%s  %s\n' "$BAZEL8_SHA256" bazel8 | sha256sum -c - \
+    && mv bazel8 /usr/local/bin/bazel-${BAZEL8_VERSION} \
     && chmod +x /usr/local/bin/bazel-${BAZEL8_VERSION} \
     && ln -s /usr/local/bin/bazel-${BAZEL8_VERSION} /usr/local/bin/bazel8 \
     && ln -s /usr/local/bin/bazel8 /usr/local/bin/bazel \

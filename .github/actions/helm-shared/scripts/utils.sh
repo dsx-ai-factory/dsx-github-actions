@@ -26,6 +26,36 @@ log_info() { printf '%s[INFO]%s %s\n' "$GREEN" "$RESET" "$1"; }
 log_warn() { printf '%s[WARN]%s %s\n' "$YELLOW" "$RESET" "$1"; }
 log_error() { printf '%s[ERROR]%s %s\n' "$RED" "$RESET" "$1"; }
 
+# Preserve the single-line status format consumed by the retry wrapper. Other
+# values may contain newlines, so use collision-checked environment blocks.
+write_env() {
+  local name=$1
+  local value=$2
+  local delimiter
+
+  if [[ ! "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    log_error "Invalid environment variable name."
+    return 1
+  fi
+
+  if [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]]; then
+    printf '%s=%s\n' "$name" "$value" >> "$GITHUB_ENV"
+    return
+  fi
+
+  delimiter="ghadelimiter_${RANDOM}_${RANDOM}_$$"
+  # Reject any occurrence, including a delimiter followed by CRLF.
+  while [[ "$value" == *"$delimiter"* ]]; do
+    delimiter="ghadelimiter_${RANDOM}_${RANDOM}_$$"
+  done
+
+  {
+    printf '%s<<%s\n' "$name" "$delimiter"
+    printf '%s\n' "$value"
+    printf '%s\n' "$delimiter"
+  } >> "$GITHUB_ENV"
+}
+
 # Helper to expand variables if they contain env var references (basic envsubst)
 expand_vars() {
   local val="$1"
@@ -55,10 +85,8 @@ helm_init_fetch() {
   log_info "Chart Version: ${CC_HELM_CHART_VERSION}"
 
   # Export back to env for subsequent steps
-  {
-    echo "CC_HELM_CHART_NAME=$CC_HELM_CHART_NAME"
-    echo "CC_HELM_CHART_VERSION=$CC_HELM_CHART_VERSION"
-  } >> "$GITHUB_ENV"
+  write_env CC_HELM_CHART_NAME "$CC_HELM_CHART_NAME"
+  write_env CC_HELM_CHART_VERSION "$CC_HELM_CHART_VERSION"
 }
 
 helm_init_package() {
@@ -76,7 +104,7 @@ helm_init_package() {
   fi
 
   log_info "Chart Version: ${CC_HELM_CHART_VERSION}"
-  echo "CC_HELM_CHART_VERSION=$CC_HELM_CHART_VERSION" >> "$GITHUB_ENV"
+  write_env CC_HELM_CHART_VERSION "$CC_HELM_CHART_VERSION"
 
   [[ -n "${HELM_CHART_APP_VERSION:-}" ]] && CC_HELM_CHART_APP_VERSION="$HELM_CHART_APP_VERSION"
   if [[ -z "${CC_HELM_CHART_APP_VERSION:-}" ]]; then
@@ -87,7 +115,7 @@ helm_init_package() {
 
   if [[ -n "${CC_HELM_CHART_APP_VERSION:-}" ]]; then
     log_info "App Version: ${CC_HELM_CHART_APP_VERSION}"
-    echo "CC_HELM_CHART_APP_VERSION=$CC_HELM_CHART_APP_VERSION" >> "$GITHUB_ENV"
+    write_env CC_HELM_CHART_APP_VERSION "$CC_HELM_CHART_APP_VERSION"
   fi
 }
 
@@ -125,13 +153,11 @@ helm_init_push() {
   log_info "Chart Description: $CC_HELM_CHART_DESCRIPTION"
   log_info "Chart Version: $CC_HELM_CHART_VERSION"
 
-  {
-    echo "CC_HELM_CHART_TGZ=$CC_HELM_CHART_TGZ"
-    echo "CC_HELM_CHART_NAME=$CC_HELM_CHART_NAME"
-    echo "CC_HELM_CHART_DESCRIPTION=$CC_HELM_CHART_DESCRIPTION"
-    echo "CC_HELM_CHART_VERSION=$CC_HELM_CHART_VERSION"
-    echo "CC_HELM_NGC_DUPLICATE=$CC_HELM_NGC_DUPLICATE"
-  } >> "$GITHUB_ENV"
+  write_env CC_HELM_CHART_TGZ "$CC_HELM_CHART_TGZ"
+  write_env CC_HELM_CHART_NAME "$CC_HELM_CHART_NAME"
+  write_env CC_HELM_CHART_DESCRIPTION "$CC_HELM_CHART_DESCRIPTION"
+  write_env CC_HELM_CHART_VERSION "$CC_HELM_CHART_VERSION"
+  write_env CC_HELM_NGC_DUPLICATE "$CC_HELM_NGC_DUPLICATE"
 }
 
 helm_extra_repos_var() {
@@ -152,7 +178,7 @@ helm_extra_repos_var() {
   fi
 
   CC_HELM_EXTRA_REPOS="$extra_repos"
-  echo "CC_HELM_EXTRA_REPOS=$CC_HELM_EXTRA_REPOS" >> "$GITHUB_ENV"
+  write_env CC_HELM_EXTRA_REPOS "$CC_HELM_EXTRA_REPOS"
 }
 
 helm_extra_repos_add() {
@@ -189,7 +215,7 @@ helm_value_overrides_var() {
   fi
 
   CC_HELM_VALUE_OVERRIDES="$overrides"
-  echo "CC_HELM_VALUE_OVERRIDES=$CC_HELM_VALUE_OVERRIDES" >> "$GITHUB_ENV"
+  write_env CC_HELM_VALUE_OVERRIDES "$CC_HELM_VALUE_OVERRIDES"
 }
 
 helm_lint() {
@@ -338,7 +364,7 @@ helm_ngc_push() {
       ngc registry chart push --source "$chart_dirname" "${CC_HELM_NGC_PATH}/${CC_HELM_CHART_NAME}:${CC_HELM_CHART_VERSION}"
     fi
 
-    echo "CC_HELM_NGC_PUSH_STATUS=$push_status" >> "$GITHUB_ENV"
+    write_env CC_HELM_NGC_PUSH_STATUS "$push_status"
     # GITHUB_ENV reaches later steps; the current step needs the exit status.
     [[ "$push_status" != "failed" ]]
   fi
