@@ -8,7 +8,8 @@ Your repository owns branch protection, approved source, required product tests,
 Shared jobs own preflight, source publishing, image and chart publishing, and immutable-artifact verification.
 No product RC scripts, publishing jobs, Node files, or `.releaserc` changes are required.
 
-The existing `release-candidate.yml` remains a separate, unchanged source-only entry point.
+The separate `release-candidate.yml` source-only interface is unchanged; its implementation now uses `plan.mjs` and `publish.mjs`.
+The generic `semantic-release` action is unchanged.
 Neither entry point changes stable publishing on `main` or migrates historical release branches.
 
 This guide covers the following topics.
@@ -81,7 +82,7 @@ The wrapper accepts these inputs. All are strings except the two booleans noted 
 | --- | --- | --- |
 | `runner` | Required, no default | Approved Linux runner for preflight and publishing. |
 | `buildkit-config` | `/etc/buildkit/buildkitd.toml` | Runner's BuildKit config. Set to `""` to use Docker defaults on GitHub-hosted runners. |
-| `default-branch` | Caller repository's default branch | Separate stable-history branch used for version calculation. |
+| `default-branch` | Empty | Deprecated compatibility input; unused. Release history comes from repository tags. |
 | `images` | `[]` | JSON array of image declarations. |
 | `charts` | `[]` | JSON array of chart declarations. |
 | `submodules` | `false` | Boolean. Recursively check out product submodules in preflight and artifact jobs. |
@@ -226,7 +227,7 @@ Pass the existing repository-scoped, write-enabled key through an explicit `rele
 Because `secrets: inherit` cannot be combined with an explicit mapping, also pass `NGC_DSX_COMPONENTS_PUSH_KEY` explicitly as described in [NGC Credentials](#ngc-credentials).
 
 The wrapper forwards this optional secret only to `release-candidate.yml`.
-The source checkout uses SSH and semantic-release receives `git@github.com:OWNER/REPO.git` for Git operations.
+The source checkout and publisher use the key through the SSH origin.
 `GITHUB_TOKEN` remains the credential for GitHub Release API calls.
 Only the source publisher uses the Deploy Key.
 The shared-code checkout, central checks, and manifest validation do not use publishing credentials.
@@ -237,7 +238,7 @@ Authorize that Deploy Key in the applicable tag rules.
 Do not relax protections to make the workflow pass.
 
 Before publishing, a one-minute SSH `git push --dry-run` checks push authentication without changing remote refs.
-An unusable key stops the workflow before semantic-release can fall back to HTTPS.
+An unusable key stops publication.
 This check does not prove that every tag-specific rule will accept the eventual release.
 `GH_TOKEN` is set to the workflow token, not inherited from the runner.
 
@@ -254,15 +255,27 @@ Shared helpers come from the called workflow revision, not from product source o
 
 The source publisher uses a full-history, non-cone sparse `release-source` checkout containing only `/.github/`.
 Product root release configuration and package files are absent.
-Shared code generates RC-only configuration in that disposable checkout.
+Shared planner code and pinned dependencies live outside that checkout.
 The product's stable-release configuration remains unchanged.
 
 Source publication requires a push to the protected, current `release/X.Y.Z` head.
 The version must be `X.Y.Z-rc.N`, with a positive sequence and no leading zeros.
-The guard checks both the preview and semantic-release's actual `verifyRelease` phase before tag creation.
+The planner selects the highest repository-wide stable `vX.Y.Z` tag below the target.
+That baseline must share ancestry with the source, but need not be its direct ancestor.
+The cumulative Conventional Commits bump from the baseline must equal the branch target, including breaking changes.
+With no stable tags, only a first release targeting `1.0.0` is allowed.
+
+Only the latest RC for the target version controls the sequence: start at `rc.1`, otherwise increment by one.
+That RC must be an ancestor of the source. No release-worthy changes since it (or the stable baseline for the first RC) means no new RC.
+Docs-only or no-change runs do not force a release. A finalized stable target blocks new RCs.
+Planning checks the remote branch head and absence of the stable target; publication independently rechecks both and the preview plan before pushing.
+The immutable RC tag and its channel-note ref with `{"channels":["rc"]}` are pushed atomically.
+Workflow-level concurrency remains per repository and ref with `cancel-in-progress: false`.
+This does not serialize manual or stable writers; atomic push protects conflicts on the RC tag and channel-note refs only.
 
 Reruns validate the existing tag's source commit and `rc` channel metadata before reusing it.
-A missing GitHub prerelease can be recovered for a verified tag.
+`verify-prerelease.sh` creates or recovers a missing GitHub prerelease for a verified tag.
+The preview supplies pinned Conventional Commits notes through optional `RC_NOTES_PATH`, preserving the same format for publication and recovery.
 An existing draft or non-prerelease is rejected, not overwritten.
 
 Shared artifact jobs run only after the source RC and GitHub prerelease are verified.
@@ -331,7 +344,7 @@ The event boundary is explicit.
 | Rerun while the commit remains the release branch head | Verify and reuse its existing RC tag. | Verify matching artifacts and publish missing artifacts. |
 
 Not every merge creates a tag.
-semantic-release uses stable history and Conventional Commits, not the highest-numbered release branch.
+The shared planner uses repository stable tags and Conventional Commits, not the highest-numbered release branch.
 The branch-target guard rejects a calculated version outside the intended release line.
 
 Exchange's historical `release/2.9.3` implementation is recorded in [PR #109](https://github.com/dsx-ai-factory/dsx-exchange/pull/109), [run 34188354559](https://github.com/dsx-ai-factory/dsx-exchange/actions/runs/34188354559), and [v2.9.3-rc.1](https://github.com/dsx-ai-factory/dsx-exchange/releases/tag/v2.9.3-rc.1).
@@ -414,16 +427,15 @@ No cluster deployment is required to verify publishing.
 
 ## Reruns
 
-The source publisher detects an existing RC before running semantic-release.
+The planner detects an existing target-line RC at the same source commit before allocating a new version.
 It requires valid `rc` channel metadata and verifies or recovers the GitHub prerelease before returning `should-publish: true` to the wrapper.
 Missing or invalid channel metadata requires maintainer repair, not a new or moved tag.
 The rerun commit must still be the current remote branch head.
 
-semantic-release creates the Git tag before downstream artifact jobs run. If a
-later job fails, a workflow rerun normally reports that no new release was
-created. `resolve-release-candidate` handles this by selecting one matching RC
-tag already pointing at `HEAD`. Multiple matching RC tags fail closed because
-the intended artifact version would be ambiguous.
+The source tag and channel notes are pushed before downstream artifact jobs run.
+If a later job fails, the rerun reuses that tag without advancing the sequence,
+including after stable promotion. Multiple target-line RC tags at the same
+commit fail closed because the intended artifact version would be ambiguous.
 
 A failed first run can leave only some artifacts behind.
 Each shared artifact job handles its immutable version independently; source-tag reuse does not skip all artifact jobs.
@@ -449,12 +461,21 @@ use version `1.0`.
 ## Next Release Cycle
 
 Agree the next target with the component owner.
-Create its protected `release/X.Y.Z` branch from approved `main` source containing the wrapper caller.
+Create its protected `release/X.Y.Z` branch from approved default-branch source containing the wrapper caller.
 Confirm that the branch matches the caller trigger and the publishing environment's branch policy.
 If your caller names one explicit branch instead of `release/*`, update that trigger through review.
 Recheck branch protection, tag rules, and release-worthy history before publishing.
 
-The shared workflow derives RC configuration from the event; do not update the product's `.releaserc.json` for this path.
+For example, `v1.15.0` may exist only on `release/1.15.0` while `master` contains
+`v1.15.0-rc.2`. A new `release/1.16.0` with a cumulative minor bump from
+`v1.15.0` starts at `1.16.0-rc.1`, without merging the prior release branch into `master`.
+
+When upgrading the shared publisher, update the consumer pin on both the default
+branch and every active release branch using it. For promotion, also align the
+default branch's `.github/rc-promotion.json` `source_publisher_sha` with the SHA
+that publishes the selected RC. Rerunning an old workflow run retains its old pin.
+
+The shared planner derives the target from the event; do not update the product's `.releaserc.json` for this path.
 Exchange's `.releaserc.json` and `release.yml` remain for stable releases from `main`.
 Historical release branches keep their checked-in workflows until an explicit migration disables the previous RC publisher.
 
@@ -469,7 +490,7 @@ after stable promotion without deleting or moving its immutable release tags.
 | --- | --- |
 | No workflow after merge | The workflow must exist on the pushed branch, and its `on.push.branches` must match. PR validation alone does not run the release job. |
 | Manifest preflight fails | Check inline JSON, accepted fields, unique names, existing repository-relative paths, chart names, and declared local dependencies. Declare at least one image or chart. No RC tag is created by a failed preflight. |
-| Workflow runs, but no new RC | Check the explicit branch target, stable history and release-worthy commits since the last release. For advanced composition, also check `.releaserc.json` and action input overrides. A docs/chore-only change may legitimately publish nothing. |
+| Workflow runs, but no new RC | Check the branch target, highest preceding stable tag and release-worthy commits since the latest target-line RC. A docs/chore-only change may legitimately publish nothing; a finalized stable target requires a new release branch. |
 | Shared checks fail before publishing | Inspect the central checks at the pinned shared workflow revision. Do not bypass them or substitute product code for the shared checkout. |
 | Source check rejects the run | Verify branch protection, exact `release/X.Y.Z` naming and that the run still targets the current remote branch head. |
 | Version-target check fails | Reconcile the intended branch target with release history and commit semantics. Do not bypass the check or move an existing tag. |
@@ -477,7 +498,7 @@ after stable promotion without deleting or moving its immutable release tags.
 | Artifact job cannot use the environment/NGC | Confirm the caller job sets `secrets: inherit` or passes `NGC_DSX_COMPONENTS_PUSH_KEY` explicitly. Then check protected branch admission, environment approvals, scoped registry permissions and runner connectivity. Never print credentials. |
 | Tag exists but some artifacts are missing | Repair the failed publishing prerequisite and rerun the same workflow run. Inspect each artifact independently; do not skip all uploads merely because the tag exists. |
 | Existing artifact has a different revision or a required platform is missing | Fail closed and investigate the publishing history. Do not overwrite the RC tag; have the release owner select the corrected release path. |
-| Multiple RC tags point to the same commit | The resolver deliberately rejects ambiguity. Have the release owner reconcile the release history instead of guessing which version to publish. |
+| Multiple target-line RC tags point to the same commit | The planner rejects ambiguity. Have the release owner reconcile the release history instead of guessing which version to publish. |
 
 The same onboarding steps apply to another GitHub-hosted component once its
 repository, runner and publishing access are ready. GitLab-native release

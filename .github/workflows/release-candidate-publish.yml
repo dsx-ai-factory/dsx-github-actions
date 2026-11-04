@@ -15,7 +15,7 @@ on:
         type: string
         default: /etc/buildkit/buildkitd.toml
       default-branch:
-        description: Stable history branch, defaults to the repository default branch
+        description: Deprecated compatibility input; unused, release history comes from repository tags
         type: string
         default: ""
       images:

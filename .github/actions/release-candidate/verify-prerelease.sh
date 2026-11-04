@@ -16,7 +16,12 @@ if ! gh api "$endpoint" > "$info" 2> "$errors"; then
     exit 1
   fi
   # Retry only a missing release. Never manufacture or move its Git tag.
-  gh release create "$RC_TAG" --verify-tag --prerelease --title "$RC_TAG" --generate-notes
+  notes=(--generate-notes)
+  if [[ -n "${RC_NOTES_PATH:-}" ]]; then
+    [[ -f "$RC_NOTES_PATH" ]]
+    notes=(--notes-file "$RC_NOTES_PATH")
+  fi
+  gh release create "$RC_TAG" --verify-tag --prerelease --title "$RC_TAG" "${notes[@]}"
   gh api "$endpoint" > "$info"
 fi
 jq -e --arg tag "$RC_TAG" '.prerelease == true and .draft == false and .tag_name == $tag' "$info"
