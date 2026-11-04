@@ -32,7 +32,9 @@ jobs:
           node-version: "24.22.1"
           package-manager-cache: false
       - name: Install shared release test dependencies
-        run: npm ci --ignore-scripts --prefix .github/actions/release-candidate/tests
+        run: |
+          npm ci --ignore-scripts --legacy-peer-deps --prefix .github/actions/release-candidate
+          npm ci --ignore-scripts --prefix .github/actions/release-candidate/tests
       - name: Test release contracts against local Git repositories
         run: npm test --prefix .github/actions/release-candidate/tests
       - uses: dcarbone/install-yq-action@4075b4dca348d74bd83f2bf82d30f25d7c54539b # v1.3.1

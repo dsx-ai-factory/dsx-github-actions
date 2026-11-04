@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 const assert = require('node:assert/strict');
-const { writeFile } = require('node:fs/promises');
 const { dirname, join } = require('node:path');
 const { test } = require('node:test');
 const { pathToFileURL } = require('node:url');
@@ -48,16 +47,17 @@ for (const authorized of [true, false]) {
     await commit('feat: unpublished candidate');
     const before = await remoteGit('show-ref');
     const sshUrl = repositoryUrl('example/consumer', true);
-    await writeFile(join(work, '.releaserc.json'), JSON.stringify({ repositoryUrl: sshUrl }));
+    await git('remote', 'set-url', 'origin', sshUrl);
     if (authorized) {
       await git('config', `url.${repository.repositoryUrl}.insteadOf`, sshUrl);
     }
     // No rewrite means SSH is rejected by the fixture's network prohibition.
-    // HTTPS origin remains accessible, so implicit fallback would be incorrect.
+    // There is no generated product configuration or implicit HTTPS fallback.
     const result = await run(bash, [join(__dirname, '../check-git-auth.sh')], {
       cwd: work,
       extraEnv: {
         GITHUB_REF: `refs/heads/${branch}`,
+        GITHUB_REPOSITORY: 'example/consumer',
         GITHUB_TOKEN: 'fixture-api-token-not-a-credential',
       },
     });

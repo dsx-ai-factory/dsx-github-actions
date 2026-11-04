@@ -46,7 +46,7 @@ All inputs are strings. The two manifests contain JSON arrays.
 | Input | Default | Purpose |
 | --- | --- | --- |
 | `runner` | Required, no default | Approved Linux runner for preflight and publishing. Central checks use `ubuntu-latest`. |
-| `default-branch` | Empty, resolved to the caller repository's default branch | Stable history for the unchanged source publisher. |
+| `default-branch` | Empty | Deprecated compatibility input; unused by the source publisher. |
 | `images` | `[]` | Entries with `name`, `context`, and `dockerfile`. Images use fixed `linux/amd64,linux/arm64` platforms. |
 | `charts` | `[]` | Entries with `name`, `path`, and optional `localDependencies: [{"name": "dependency", "path": "path/to/chart"}]`. |
 | `environment` | Required | GitHub environment for artifact jobs. Exchange uses `components-dev`. |
@@ -117,7 +117,8 @@ The source-only outputs `should-publish` and `reused-existing-tag` are not wrapp
 
 ## Release Candidate (`release-candidate.yml`)
 
-The existing `workflow_call` entry point remains unchanged for source-only RC releases.
+The source-only `workflow_call` interface is unchanged; `plan.mjs` and `publish.mjs`
+replace its semantic-release orchestration. The generic `semantic-release` action is unchanged.
 Start with the [source-only caller](../../docs/release-candidate-publishing.md#source-only-workflow).
 Replace its `REPLACE_WITH_REVIEWED_COMMIT_SHA` placeholder with a full
 reviewed commit containing this workflow before enabling it. No product Node
@@ -128,7 +129,7 @@ files, `.releaserc` changes or custom scripts are required.
 | Input | Default | Purpose |
 | --- | --- | --- |
 | `runner` | `ubuntu-latest` | Approved Linux runner for the release job. Central checks use `ubuntu-latest`. |
-| `default-branch` | Empty, resolved to the caller repository's default branch | Separate stable-history branch used for version calculation. |
+| `default-branch` | Empty | Deprecated compatibility input; unused. History comes from repository tags. |
 
 ### Optional Secret
 
@@ -136,13 +137,13 @@ files, `.releaserc` changes or custom scripts are required.
 | --- | --- | --- |
 | `release-deploy-key` | Not provided | Repository-scoped, write-enabled SSH deploy key authorized by the repository's tag rules. Used only in the source release job for Git operations, not central checks or the shared-code checkout. |
 
-When provided, the source checkout uses the key and the generated release
-configuration uses `git@github.com:OWNER/REPO.git`. Without it, Git continues
+When provided, the source checkout and publisher use the key through the SSH
+origin. Without it, Git continues
 using HTTPS and `GITHUB_TOKEN`. In both modes, `GITHUB_TOKEN` with
 `contents: write` handles GitHub Release API calls; `GH_TOKEN` is set to that
 same workflow token rather than inherited from the runner. Deploy Key mode
 requires a successful SSH push dry run with a one-minute timeout before
-publishing, so an unusable key fails before token fallback. See the
+publishing, so an unusable key stops publication. See the
 [onboarding example](../../docs/release-candidate-publishing.md#optional-deploy-key-authentication).
 
 ### Contract
@@ -157,16 +158,25 @@ publishing, so an unusable key fails before token fallback. See the
   and tag rules must be configured beforehand. The caller grants
   `contents: write` to the workflow's `GITHUB_TOKEN`.
 - A full-history, non-cone sparse `release-source` checkout excludes product
-  root configuration/package files. RC configuration is generated there;
-  shared helpers live in sibling `dsx-rc-actions`. Product stable-release
+  root configuration/package files. Shared helpers and pinned dependencies
+  live in sibling `dsx-rc-actions`. Product stable-release
   configuration is unchanged. The Linux runner needs Git with non-cone sparse
   support, Bash, `gh` and `jq`; the workflow sets up Node itself.
-- The calculated version must be `X.Y.Z-rc.N` with a positive, canonical RC
-  sequence. Both the preview and actual publication are guarded, including
-  semantic-release's `verifyRelease` phase before tag creation.
+- The highest repository-wide stable version below `X.Y.Z` is the baseline and
+  must share ancestry with the source. Its cumulative Conventional Commits bump
+  must equal `X.Y.Z`. Only the latest target-line RC controls the sequence.
+  No release-worthy changes means no new RC; an existing stable target blocks new RCs.
+- The version must be canonical `X.Y.Z-rc.N`. Publication rechecks the preview
+  plan, remote branch head and absence of the stable target before atomically
+  pushing the immutable tag and its `rc` channel notes.
 - Reruns verify the existing source tag and `rc` channel metadata, then verify
-  or recover the non-draft GitHub prerelease. Ambiguous tags or invalid
+  or recover the non-draft GitHub prerelease using the preview's pinned
+  Conventional Commits notes. Ambiguous target-line tags or invalid
   metadata fail closed. Runs for an old branch head are rejected.
+- Workflow-level concurrency remains
+  `dsx-release-candidate-${{ github.repository }}-${{ github.ref }}` with
+  `cancel-in-progress: false`. It does not serialize manual or stable writers;
+  atomic push protects conflicts on the RC tag and channel-note refs only.
 - Only source RC tags and GitHub prereleases are published, not stable/major
   tags or NGC artifacts. No access to private dependency repositories or
   registry secrets is required.
