@@ -40,6 +40,8 @@ jobs:
       - uses: dcarbone/install-yq-action@4075b4dca348d74bd83f2bf82d30f25d7c54539b # v1.3.1
       - name: Install Helm for local chart packaging tests
         run: bash .github/actions/helm-shared/scripts/install-helm.sh
+      - name: Test chart index refresh with the runner's Helm
+        run: python3 -m unittest discover -s .github/actions/helm-shared/tests -p 'test_update_repo.py' -v
       - name: Test artifact planning, preparation, and verification
         run: node --test .github/actions/release-artifacts/tests/*.test.cjs
       - name: Test RC promotion and retry behavior

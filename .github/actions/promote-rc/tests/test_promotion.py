@@ -3,6 +3,7 @@
 
 import base64
 import copy
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 import os
@@ -839,8 +840,11 @@ class ToolTests(unittest.TestCase):
             alias = f"promotion-{role}"
 
             def response(args, **kwargs):
-                if args[:3] == ["helm", "repo", "update"]:
-                    self.assertEqual(args[3], alias)
+                if args[0] == "bash":
+                    self.assertEqual(args, [
+                        "bash", str(registry.tools.parent / "helm-shared/scripts/update-repo.sh"), alias,
+                    ])
+                    self.assertTrue(kwargs["clean_stderr"])
                     return b""
                 if args[:3] == ["helm", "search", "repo"]:
                     self.assertEqual(args[3], f"{alias}/service")
@@ -933,6 +937,107 @@ class ToolTests(unittest.TestCase):
         result = subprocess.CompletedProcess([], 0, b"[]", b"cannot load index")
         with patch("subprocess.run", return_value=result), self.assertRaises(p.PromotionError):
             p.Registry("example/components-dev").chart("source", "service", RC, True)
+
+
+class RegistryChartProcessTests(unittest.TestCase):
+    HELM_STUB = r'''
+import json
+import os
+from pathlib import Path
+import sys
+
+state_path = Path(os.environ["PROMOTION_TEST_STATE"])
+state = json.loads(state_path.read_text())
+args = sys.argv[1:]
+state["calls"].append(args)
+state_path.write_text(json.dumps(state))
+alias = "promotion-" + state["role"]
+if args == ["version", "--template", "{{.Version}}"]:
+    reply = state["version"]
+elif args[:2] == ["repo", "update"]:
+    version = state["version"].get("stdout", "")
+    flags = ["--fail-on-repo-update-fail"] if version.startswith("v3.") else []
+    if args != ["repo", "update", alias, *flags]:
+        sys.exit("unsupported repository refresh arguments: " + " ".join(args))
+    reply = state["update"]
+elif args == ["search", "repo", alias + "/service", "--versions", "--devel", "-o", "json"]:
+    rows = [{"name": alias + "/service", "version": state["rc"]}] if state["present"] else []
+    reply = {"stdout": json.dumps(rows)}
+elif args[:4] == ["pull", alias + "/service", "--version", state["rc"]]:
+    assert args[4] == "--destination" and len(args) == 6
+    (Path(args[5]) / ("service-" + state["rc"] + ".tgz")).write_bytes(b"verified chart bytes")
+    reply = {}
+else:
+    sys.exit("unexpected Helm command: " + " ".join(args))
+sys.stdout.write(reply.get("stdout", ""))
+sys.stderr.write(reply.get("stderr", ""))
+sys.exit(reply.get("code", 0))
+'''
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="promotion-chart-test-")
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.state_file = self.directory / "state.json"
+        self.temp_root = self.directory / "tmp"
+        self.temp_root.mkdir()
+        executable = self.directory / "helm"
+        executable.write_text(f"#!{sys.executable}\n{self.HELM_STUB}")
+        executable.chmod(0o755)
+        self.env = {
+            "PATH": f"{self.directory}:{os.environ['PATH']}",
+            "PROMOTION_TEST_STATE": str(self.state_file),
+            "RUNNER_TEMP": str(self.temp_root), "TMPDIR": str(self.temp_root),
+        }
+        self.registry = p.Registry("example/components-dev", "example/components-dev")
+
+    def read_chart(self, role="source", **responses):
+        self.state_file.write_text(json.dumps({
+            "version": {"stdout": "v3.18.3"}, "update": {}, "present": True,
+            "role": role, "rc": RC, "calls": [], **responses,
+        }))
+        with patch.dict(os.environ, self.env):
+            return self.registry.chart(role, "service", RC, absent=True)
+
+    def calls(self):
+        self.assertEqual(list(self.temp_root.iterdir()), [])
+        return json.loads(self.state_file.read_text())["calls"]
+
+    def test_supported_helm_versions_refresh_the_selected_repository_before_pull(self):
+        for version, flags in (("v3.18.3", ["--fail-on-repo-update-fail"]), ("v4.0.0", [])):
+            for role in ("source", "destination"):
+                with self.subTest(version=version, role=role):
+                    self.assertEqual(self.read_chart(role, version={"stdout": version}), b"verified chart bytes")
+                    calls = self.calls()
+                    self.assertEqual(calls[:2], [
+                        ["version", "--template", "{{.Version}}"],
+                        ["repo", "update", f"promotion-{role}", *flags],
+                    ])
+                    self.assertEqual([call[0] for call in calls], ["version", "repo", "search", "pull"])
+
+    def test_helm4_confirms_absence_only_after_a_clean_refresh(self):
+        self.assertIsNone(self.read_chart(version={"stdout": "v4.0.0"}, present=False))
+        self.assertEqual([call[0] for call in self.calls()], ["version", "repo", "search"])
+
+    def test_refresh_and_version_failures_never_become_absence_or_leak_output(self):
+        secret_url = "https://user:promotion-secret@registry.invalid/index.yaml?token=private-query"
+        for name, responses, updates in (
+            ("Helm 4 failure", {"version": {"stdout": "v4.0.0"},
+                                "update": {"code": 1, "stdout": secret_url, "stderr": secret_url}}, 1),
+            ("Helm 4 warning", {"version": {"stdout": "v4.0.0"},
+                                "update": {"stdout": secret_url, "stderr": secret_url}}, 1),
+            ("unsupported major", {"version": {"stdout": "v5.0.0"}}, 0),
+            ("invalid version", {"version": {"stdout": secret_url}}, 0),
+            ("failed version probe", {"version": {"code": 1, "stdout": secret_url,
+                                                  "stderr": secret_url}}, 0),
+        ):
+            with self.subTest(name=name), redirect_stdout(io.StringIO()) as stdout, \
+                    redirect_stderr(io.StringIO()) as stderr:
+                with self.assertRaises(p.PromotionError) as error:
+                    self.read_chart(present=False, **responses)
+                self.assertEqual([call[0] for call in self.calls()], ["version"] + ["repo"] * updates)
+                for text in ("promotion-secret", "registry.invalid", "private-query"):
+                    self.assertNotIn(text, str(error.exception) + stdout.getvalue() + stderr.getvalue())
 
 
 if __name__ == "__main__":

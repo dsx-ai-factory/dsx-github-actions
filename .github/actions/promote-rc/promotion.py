@@ -523,7 +523,8 @@ class Registry:
         require(role in {"source", "destination"}, "invalid registry credential role")
         repo = f"promotion-{role}"
         # Refresh errors never mean "version absent".
-        command(["helm", "repo", "update", repo, "--fail-on-repo-update-fail"], clean_stderr=True)
+        command(["bash", str(self.tools.parent / "helm-shared/scripts/update-repo.sh"), repo],
+                clean_stderr=True)
         rows = json.loads(command([
             "helm", "search", "repo", f"{repo}/{name}", "--versions", "--devel", "-o", "json",
         ], clean_stderr=True))
