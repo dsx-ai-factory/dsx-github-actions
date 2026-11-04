@@ -10,8 +10,10 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import tempfile
+import time
 import urllib.parse
 import zipfile
 
@@ -31,6 +33,10 @@ INTENT_PREFIX = "Verified RC promotion intent.\n\n```json\n"
 
 class PromotionError(ValueError):
     """A bounded diagnostic that never includes command output or credentials."""
+
+
+class ArtifactPending(PromotionError):
+    """A registry lookup confirmed that an external artifact is not present yet."""
 
 
 def require(condition, message):
@@ -76,7 +82,7 @@ def value_paths(value):
 
 
 def policy(value):
-    require(isinstance(value, dict) and set(value) == {
+    require(isinstance(value, dict) and set(value) - {"previous_source_publisher_shas"} == {
         "schema", "enabled", "source_workflow", "source_publisher_sha", "source_ngc_path",
         "destination_ngc_path", "images", "charts", "competing_workflows",
     }, "invalid promotion policy fields")
@@ -85,6 +91,11 @@ def policy(value):
     require(matches(r"\.github/workflows/[A-Za-z0-9_-]+\.ya?ml", value["source_workflow"]),
             "invalid source workflow")
     require(matches(SHA, value["source_publisher_sha"]), "source publisher must be an immutable SHA")
+    previous = value.get("previous_source_publisher_shas", [])
+    require(isinstance(previous, list) and len(previous) <= 8 and
+            all(matches(SHA, sha) for sha in previous) and
+            len(set(previous)) == len(previous) and value["source_publisher_sha"] not in previous,
+            "previous source publishers must be at most eight distinct immutable SHAs excluding the primary")
     for field in ("source_ngc_path", "destination_ngc_path"):
         require(matches(NGC_PATH, value[field]), "invalid NGC organization/team")
     require(isinstance(value["images"], list) and len(value["images"]) <= 32 and
@@ -323,9 +334,11 @@ class GitHub:
         publishers = [item for item in referenced if isinstance(item, dict) and
                       isinstance(item.get("path"), str) and
                       item["path"].split("@", 1)[0] == SOURCE_PUBLISHER]
-        sha = config["source_publisher_sha"]
-        require(len(publishers) == 1 and publishers[0]["path"] == f"{SOURCE_PUBLISHER}@{sha}" and
-                publishers[0].get("sha") == sha and publishers[0].get("ref") in {None, sha},
+        approved = [config["source_publisher_sha"], *config.get("previous_source_publisher_shas", [])]
+        require(len(publishers) == 1 and any(
+                publishers[0]["path"] == f"{SOURCE_PUBLISHER}@{sha}" and
+                publishers[0].get("sha") == sha and publishers[0].get("ref") in {None, sha}
+                for sha in approved),
                 "RC attempt did not use the approved immutable shared publisher")
         artifacts = self.pages(f"actions/runs/{run['id']}/artifacts", "artifacts")
         name = f"rc-promotion-manifest-{rc}-{run['run_attempt']}"
@@ -347,7 +360,8 @@ class GitHub:
                     archive.infolist()[0].file_size <= 1024 * 1024,
                     "unexpected RC manifest archive contents")
             data = json.loads(archive.read("rc-promotion-manifest.json"))
-        return manifest(data, config, self.repository, rc, commit, run)
+        # Keep run provenance separate from the downloaded manifest and its digest.
+        return manifest(data, config, self.repository, rc, commit, run), publishers[0]["sha"]
 
     @staticmethod
     def intent(release):
@@ -552,8 +566,11 @@ class Registry:
                      f"{self.destination}/{name}:{stable}"])
 
 
-def promote(config, evidence, github, registry, attempt, report_path=None):
+def promote(config, evidence, github, registry, attempt, report_path=None, *, source_publisher_sha):
     policy(config)
+    require(source_publisher_sha in [config["source_publisher_sha"],
+                                    *config.get("previous_source_publisher_shas", [])],
+            "verified source publisher is not approved")
     rc = evidence["rc_version"]
     stable = version(rc)
     commit = evidence["commit"]
@@ -586,7 +603,7 @@ def promote(config, evidence, github, registry, attempt, report_path=None):
         "schema": 1, "repository": evidence["repository"], "rc_version": rc,
         "stable_version": stable, "commit": commit, "rc_manifest_digest": manifest_digest,
         "source_run_id": evidence["run_id"], "source_run_attempt": evidence["run_attempt"],
-        "source_publisher_sha": config["source_publisher_sha"],
+        "source_publisher_sha": source_publisher_sha,
         "source_ngc_path": config["source_ngc_path"],
         "destination_ngc_path": config["destination_ngc_path"],
         "images": image_targets, "charts": chart_targets,
@@ -635,7 +652,7 @@ def promote(config, evidence, github, registry, attempt, report_path=None):
         raise
 
 
-def capture(config, registry, context):
+def capture(config, registry, context, allow_missing=False):
     rc = context["rc_version"]
     version(rc)
     require(matches(SHA, context["commit"]), "invalid RC commit")
@@ -644,15 +661,43 @@ def capture(config, registry, context):
         "images": [], "charts": [],
     }
     for name in sorted(config["images"]):
-        value = registry.image_digest("source", name, rc)
+        value = registry.image_digest("source", name, rc, absent=allow_missing)
+        if allow_missing and value is None:
+            raise ArtifactPending(f"RC image {name} is not published yet")
         require(matches(DIGEST, value), "invalid image digest")
         registry.verify_image(name, value, context["commit"])
         result["images"].append({"name": name, "digest": value})
     for item in sorted(config["charts"], key=lambda item: item["name"]):
-        data = registry.chart("source", item["name"], rc)
+        data = registry.chart("source", item["name"], rc, absent=allow_missing)
+        if allow_missing and data is None:
+            raise ArtifactPending(f"RC chart {item['name']} is not published yet")
         charts.validate(data, item["name"], rc, context["commit"])
         result["charts"].append({**item, "digest": charts.digest(data)})
     return result
+
+
+def capture_when_ready(config, registry, context, wait_seconds=0):
+    require(type(wait_seconds) is int and 0 <= wait_seconds <= 10800,
+            "capture wait must be between 0 and 10800 seconds")
+    if wait_seconds == 0:
+        return capture(config, registry, context)
+
+    def expired(_signum, _frame):
+        raise PromotionError("timed out waiting for verified external RC artifacts")
+
+    # Bound the entire wait, including registry tools and chart validation on Linux.
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, wait_seconds)
+    try:
+        while True:
+            try:
+                return capture(config, registry, context, allow_missing=True)
+            except ArtifactPending as error:
+                print(f"Waiting for external publication: {error}", flush=True)
+                time.sleep(30)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def authenticate_registries(config, capture_only=False):
@@ -694,7 +739,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=("capture", "promote"))
     parser.add_argument("--policy", default=POLICY_PATH)
+    parser.add_argument("--wait-seconds", type=int, default=0)
     args = parser.parse_args()
+    require(0 <= args.wait_seconds <= 10800 and
+            (args.operation == "capture" or args.wait_seconds == 0),
+            "wait-seconds is only supported for capture, between 0 and 10800")
     if args.operation == "capture":
         images = json.loads(os.environ["RC_IMAGES"])
         declared = json.loads(os.environ["RC_CHARTS"])
@@ -714,7 +763,8 @@ def main():
             "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
             "source_workflow": workflow[len(prefix):],
         }
-        result = capture(config, Registry(config["source_ngc_path"]), context)
+        result = capture_when_ready(config, Registry(config["source_ngc_path"]), context,
+                                    args.wait_seconds)
         Path("rc-promotion-manifest.json").write_bytes(canonical(result))
         return
     require(os.environ.get("DSX_RELEASE_MODE") == "rc-promotion", "promotion activation gate is off")
@@ -728,12 +778,12 @@ def main():
     github.gates(config, context)
     rc = os.environ["RC_VERSION"]
     version(rc)
-    evidence = github.evidence(config, rc)
+    evidence, source_publisher_sha = github.evidence(config, rc)
     authenticate_registries(config)
     result = promote(config, evidence, github,
                      Registry(config["source_ngc_path"], config["destination_ngc_path"]),
                      f"{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}",
-                     Path("promotion-result.json"))
+                     Path("promotion-result.json"), source_publisher_sha=source_publisher_sha)
     Path("promotion-result.json").write_bytes(canonical(result))
 
 

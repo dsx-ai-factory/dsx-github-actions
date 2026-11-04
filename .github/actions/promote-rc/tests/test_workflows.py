@@ -275,6 +275,31 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(upload["with"]["name"],
                          "rc-promotion-manifest-${{ needs.release.outputs.version }}-${{ github.run_attempt }}")
 
+    def test_external_publisher_keeps_source_release_and_same_run_manifest(self):
+        workflow = charts.yaml_object((ROOT / "workflows/release-candidate-publish.yml").read_bytes())
+        self.assertEqual(workflow["on"]["workflow_call"]["inputs"]["artifact-publisher"]["default"],
+                         "github")
+        jobs = workflow["jobs"]
+        self.assertEqual(jobs["release"]["needs"], "plan")
+        self.assertEqual(jobs["release"]["uses"], "./.github/workflows/release-candidate.yml")
+        plan = next(step for step in jobs["plan"]["steps"] if step.get("id") == "plan")
+        self.assertEqual(plan["env"]["RC_ARTIFACT_PUBLISHER"], "${{ inputs.artifact-publisher }}")
+        self.assertEqual(plan["env"]["RC_PROMOTION_MANIFEST"], "${{ inputs.promotion-manifest }}")
+        for name in ("images", "charts"):
+            self.assertIn("inputs.artifact-publisher == 'github'", jobs[name]["if"])
+        job = jobs["promotion-manifest"]
+        for condition in ("inputs.artifact-publisher == 'external'", "needs.plan.result == 'success'",
+                          "needs.release.result == 'success'", "needs.images.result == 'skipped'",
+                          "needs.charts.result == 'skipped'"):
+            self.assertIn(condition, job["if"])
+        capture = next(step for step in job["steps"] if step.get("name") == "Capture every verified RC artifact")
+        self.assertEqual(capture["env"]["RC_CAPTURE_WAIT_SECONDS"],
+                         "${{ inputs.artifact-publisher == 'external' && '10800' || '0' }}")
+        self.assertIn('--wait-seconds "$RC_CAPTURE_WAIT_SECONDS"', capture["run"])
+        self.assertNotIn("continue-on-error", capture)
+        checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+        self.assertEqual(checkout["with"]["ref"], "${{ job.workflow_sha }}")
+
 
 if __name__ == "__main__":
     unittest.main()

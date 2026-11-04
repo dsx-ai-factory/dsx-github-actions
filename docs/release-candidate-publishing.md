@@ -76,7 +76,7 @@ Only a push to a protected, current `release/X.Y.Z` head can pass the source pub
 
 ### Inputs
 
-The wrapper accepts these inputs. All are strings except the two booleans noted below.
+The wrapper accepts these inputs. All are strings except the booleans noted below.
 
 | Input | Default | Meaning |
 | --- | --- | --- |
@@ -87,6 +87,8 @@ The wrapper accepts these inputs. All are strings except the two booleans noted 
 | `charts` | `[]` | JSON array of chart declarations. |
 | `submodules` | `false` | Boolean. Recursively check out product submodules in preflight and artifact jobs. |
 | `validate-artifacts` | `false` | Boolean. Build images and lint/package charts on nonrelease events, without publishing. |
+| `promotion-manifest` | `false` | Boolean. Capture verified artifact digests in the publishing run for stable promotion. |
+| `artifact-publisher` | `github` | `github` publishes images and charts. `external` requires `promotion-manifest: true` and verifies externally published artifacts. |
 | `environment` | Required | GitHub environment used by artifact jobs. |
 | `ngc-path` | Required | NGC organization/team path, without `nvcr.io/`. |
 
@@ -94,6 +96,17 @@ Each artifact array defaults to empty, but the wrapper requires at least one ima
 An empty array disables that artifact type.
 Use the [source-only workflow](#source-only-workflow) when neither artifact type is needed.
 Image platforms are fixed to `linux/amd64,linux/arm64`; the wrapper has no platform input.
+
+With `artifact-publisher: external`, GitHub still calculates the RC, creates its
+immutable tag and prerelease, and uploads the promotion manifest in the same run.
+It skips GitHub image and chart publication and waits up to 180 minutes for the
+declared NGC artifacts. Only confirmed missing artifacts are retried. Image
+platforms, source revisions, chart metadata, and digests must pass the existing
+capture checks. Registry errors and provenance mismatches fail the run.
+The selected environment still supplies NGC read access through the existing
+credential mapping. No external CI credentials or API calls are required.
+Coordinate the external producer before enabling this mode and retain the
+reviewed publisher SHA in the promotion policy.
 
 With `validate-artifacts: true`, nonrelease events run the declared image and chart matrices after shared checks and preflight pass.
 Images use the same Docker action, contexts, targets, arguments, and platforms as publishing, with `push: false` and remote caching disabled.

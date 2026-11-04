@@ -201,6 +201,21 @@ class PolicyTests(unittest.TestCase):
     def test_valid(self):
         self.assertEqual(p.policy(config()), config())
 
+    def test_previous_publishers_are_optional_bounded_and_immutable(self):
+        for previous in ([], ["e" * 40], [f"{i:040x}" for i in range(8)]):
+            candidate = {**config(), "previous_source_publisher_shas": previous}
+            self.assertEqual(p.policy(candidate), candidate)
+        for previous in (None, "e" * 40, {}, [None], ["main"], ["v1.2.3"],
+                         ["E" * 40], ["e" * 39], ["e" * 40 + "\n"],
+                         ["e" * 40, "e" * 40], [PUBLISHER_SHA],
+                         [f"{i:040x}" for i in range(9)]):
+            with self.subTest(previous=previous), self.assertRaises(p.PromotionError):
+                p.policy({**config(), "previous_source_publisher_shas": previous})
+        candidate = {**config(), "previous_source_publisher_shas": [PUBLISHER_SHA]}
+        del candidate["source_publisher_sha"]
+        with self.assertRaises(p.PromotionError):
+            p.policy(candidate)
+
     def test_charts_reject_namespace_changes_including_no_declared_version_paths(self):
         for paths in ([["image", "tag"]], []):
             candidate = config()
@@ -353,7 +368,8 @@ class ChartTests(unittest.TestCase):
         registry = MemoryRegistry(source)
         github = MemoryGitHub()
         with self.assertRaises(charts.InvalidChart):
-            p.promote(config(), evidence(source), github, registry, "23-1")
+            p.promote(config(), evidence(source), github, registry, "23-1",
+                      source_publisher_sha=PUBLISHER_SHA)
         self.assertEqual(registry.writes, [])
         self.assertIsNone(github.reservation)
 
@@ -540,7 +556,8 @@ class PromotionTests(unittest.TestCase):
         self.github = MemoryGitHub()
 
     def promote(self, attempt="23-1", path=None):
-        return p.promote(config(), self.evidence, self.github, self.registry, attempt, path)
+        return p.promote(config(), self.evidence, self.github, self.registry, attempt, path,
+                         source_publisher_sha=PUBLISHER_SHA)
 
     def test_complete_promotion_and_matching_rerun(self):
         first = self.promote()
@@ -585,7 +602,8 @@ class PromotionTests(unittest.TestCase):
         candidate = config()
         candidate["destination_ngc_path"] = "example/components"
         with self.assertRaisesRegex(p.PromotionError, "identical source and destination NGC paths"):
-            p.promote(candidate, self.evidence, None, None, "23-1")
+            p.promote(candidate, self.evidence, None, None, "23-1",
+                      source_publisher_sha=PUBLISHER_SHA)
 
     def test_unpromoted_chart_repository_fails_before_any_write(self):
         for disabled in (False, True):
@@ -605,7 +623,8 @@ class PromotionTests(unittest.TestCase):
                 registry = MemoryRegistry(source)
                 github = MemoryGitHub()
                 with self.assertRaisesRegex(charts.InvalidChart, "not a verified promotion destination"):
-                    p.promote(candidate, proof, github, registry, "23-1")
+                    p.promote(candidate, proof, github, registry, "23-1",
+                              source_publisher_sha=PUBLISHER_SHA)
                 self.assertEqual(registry.writes, [])
                 self.assertIsNone(github.reservation)
 
@@ -717,6 +736,105 @@ class CaptureTests(unittest.TestCase):
         with self.assertRaises(charts.InvalidChart):
             p.capture(config(), registry, context)
         self.assertEqual(registry.writes, [])
+
+
+class CaptureWaitTests(unittest.TestCase):
+    def setUp(self):
+        self.data = archive()
+        self.expected = evidence(self.data)
+        self.context = {key: self.expected[key] for key in (
+            "repository", "rc_version", "commit", "run_id", "run_attempt", "source_workflow",
+        )}
+        self.registry = MemoryRegistry(self.data)
+
+    def test_waits_for_images_then_charts_and_captures_complete_verified_inventory(self):
+        self.registry.source_image = None
+        self.registry.source_chart = None
+
+        def publish(_seconds):
+            if self.registry.source_image is None:
+                self.registry.source_image = IMAGE
+            else:
+                self.registry.source_chart = self.data
+
+        with patch.object(p.signal, "signal") as handler, \
+                patch.object(p.signal, "setitimer") as timer, \
+                patch.object(p.time, "sleep", side_effect=publish) as sleep, \
+                redirect_stdout(io.StringIO()):
+            result = p.capture_when_ready(config(), self.registry, self.context, 60)
+        self.assertEqual(result, self.expected)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(self.registry.writes, [])
+        self.assertEqual(timer.call_args_list[0].args, (p.signal.ITIMER_REAL, 60))
+        timer.assert_called_with(p.signal.ITIMER_REAL, 0)
+        handler.assert_called_with(p.signal.SIGALRM, handler.return_value)
+
+    def test_deadline_stops_wait_without_returning_partial_evidence(self):
+        self.registry.source_chart = None
+        with patch.object(p.signal, "signal") as handler, \
+                patch.object(p.signal, "setitimer") as timer, \
+                patch.object(p.time, "sleep") as sleep, redirect_stdout(io.StringIO()):
+            sleep.side_effect = lambda _: handler.call_args_list[0].args[1](None, None)
+            with self.assertRaisesRegex(p.PromotionError, "timed out"):
+                p.capture_when_ready(config(), self.registry, self.context, 30)
+        sleep.assert_called_once_with(30)
+        self.assertEqual(self.registry.writes, [])
+        timer.assert_called_with(p.signal.ITIMER_REAL, 0)
+        handler.assert_called_with(p.signal.SIGALRM, handler.return_value)
+
+    def test_deadline_interrupts_a_blocked_registry_tool(self):
+        self.registry.image_digest = lambda *_args, **_kwargs: p.command([
+            sys.executable, "-c", "import time; time.sleep(60)",
+        ])
+        previous = p.signal.getsignal(p.signal.SIGALRM)
+        with self.assertRaisesRegex(p.PromotionError, "timed out"):
+            p.capture_when_ready(config(), self.registry, self.context, 1)
+        self.assertEqual(p.signal.getsignal(p.signal.SIGALRM), previous)
+        self.assertEqual(p.signal.getitimer(p.signal.ITIMER_REAL), (0.0, 0.0))
+        self.assertEqual(self.registry.writes, [])
+
+    def test_invalid_cli_wait_fails_before_authentication_or_manifest_write(self):
+        for operation, wait in (("capture", "-1"), ("capture", "10801"), ("promote", "30")):
+            with self.subTest(operation=operation, wait=wait), \
+                    patch.object(sys, "argv", ["promotion.py", operation, "--wait-seconds", wait]), \
+                    patch.object(p, "authenticate_registries") as authenticate, \
+                    patch.object(Path, "write_bytes") as write, \
+                    self.assertRaises(p.PromotionError):
+                p.main()
+            authenticate.assert_not_called()
+            write.assert_not_called()
+
+    def test_authentication_invalid_digest_and_wrong_provenance_are_not_retried(self):
+        for failure in ("read", "digest", "image-provenance", "chart-provenance"):
+            registry = MemoryRegistry(self.data)
+            if failure == "read":
+                registry.fail_read = True
+            elif failure == "digest":
+                registry.source_image = "not-a-digest"
+            elif failure == "image-provenance":
+                registry.verify_image = lambda *_: p.require(False, "wrong image provenance")
+            else:
+                registry.source_chart = archive({"service/Chart.yaml": b"name: wrong\n"})
+            with self.subTest(failure=failure), patch.object(p.signal, "signal"), \
+                    patch.object(p.signal, "setitimer") as timer, \
+                    patch.object(p.time, "sleep") as sleep, \
+                    self.assertRaises((p.PromotionError, charts.InvalidChart)):
+                p.capture_when_ready(config(), registry, self.context, 60)
+            sleep.assert_not_called()
+            timer.assert_called_with(p.signal.ITIMER_REAL, 0)
+            self.assertEqual(registry.writes, [])
+
+    def test_default_capture_does_not_wait_and_invalid_deadlines_fail_before_reads(self):
+        with patch.object(p.signal, "signal") as handler, \
+                patch.object(p.time, "sleep") as sleep:
+            self.assertEqual(p.capture_when_ready(config(), self.registry, self.context), self.expected)
+            handler.assert_not_called()
+            sleep.assert_not_called()
+        for timeout in (-1, 10801, True, 0.5, "30"):
+            registry = MemoryRegistry(self.data)
+            with self.subTest(timeout=timeout), self.assertRaises(p.PromotionError):
+                p.capture_when_ready(config(), registry, self.context, timeout)
+            self.assertEqual(registry.reads, [])
 
 
 class GateTests(unittest.TestCase):
