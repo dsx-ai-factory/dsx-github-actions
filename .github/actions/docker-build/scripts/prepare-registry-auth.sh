@@ -23,9 +23,13 @@ fi
 printf '{"auths":{}}\n' > "$authfile"
 chmod 600 "$authfile"
 [[ -f "$config" ]] || exit 0
+# Validate the original JSON value before command substitution strips newlines.
 helper="$(jq -er --arg server "$server" '
-  (.credHelpers[$server] // .credsStore // "") |
-  if type == "string" then . else error("Invalid credential helper") end
+  (if .credHelpers[$server] != null then .credHelpers[$server]
+   elif .credsStore != null then .credsStore else "" end) |
+  if type != "string" then error("Invalid credential helper")
+  elif . == "" or test("\\A[a-zA-Z0-9][a-zA-Z0-9_-]*\\z") then .
+  else error("Invalid credential helper") end
 ' "$config" 2>/dev/null)" || fail
 if [[ -n "$helper" ]]; then
   [[ "$helper" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || fail

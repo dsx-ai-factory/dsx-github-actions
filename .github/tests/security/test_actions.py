@@ -55,13 +55,24 @@ class ActionSecurityTests(unittest.TestCase):
         (directory / "config.json").write_text(json.dumps(value))
 
     def test_invalid_credential_helpers_fail_without_execution(self):
-        for helper in ("../evil", "../../tmp/evil", "/tmp/evil", "a/b", "a b", "a\nb", "$(id)", 123, {}):
+        self.executable("docker-credential-test-helper", """import os
+from pathlib import Path
+Path(os.environ['CALLS']).touch()
+""")
+        for helper in ("../evil", "../../tmp/evil", "/tmp/evil", "a/b", "a b", "a\nb", "$(id)",
+                       "test-helper\n", "test-helper\n\n", "test-helper\r\n", 123, {}, False, True):
             for field in ("credsStore", "credHelpers"):
                 with self.subTest(helper=helper, field=field):
                     self.docker_config({field: {"ghcr.io": helper} if field == "credHelpers" else helper})
                     result = self.run_script(AUTH, "ghcr.io/example/image", str(self.root / "auth.json"))
                     self.assertNotEqual(result.returncode, 0)
                     self.assertEqual(json.loads((self.root / "auth.json").read_text()), {"auths": {}})
+                    self.assertFalse((self.root / "calls").exists())
+
+        self.docker_config({"credHelpers": {"ghcr.io": False}, "credsStore": "test-helper"})
+        result = self.run_script(AUTH, "ghcr.io/example/image", str(self.root / "auth.json"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "calls").exists())
 
     def test_valid_helper_and_registry_specific_selection(self):
         self.executable("docker-credential-test-helper", """import json, os, sys
@@ -77,6 +88,12 @@ print(json.dumps({'Username': 'fixture', 'Secret': 'not-a-real-secret'}))
             "auths": {"ghcr.io": {"auth": base64.b64encode(b"fixture:not-a-real-secret").decode()}}})
         self.assertNotIn("not-a-real-secret", result.stdout + result.stderr)
         self.assertEqual((self.root / "auth.json").stat().st_mode & 0o777, 0o600)
+
+        # Null remains an absent value, unlike malformed false or non-strings.
+        self.docker_config({"credHelpers": {"ghcr.io": None}, "credsStore": "test-helper"})
+        result = self.run_script(AUTH, "ghcr.io/example/image", str(self.root / "auth.json"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads((self.root / "calls").read_text()), [["get"], "ghcr.io"])
 
     def test_no_helper_preserves_only_destination_auth(self):
         self.docker_config({"auths": {"ghcr.io": {"auth": "fixture"}, "other.invalid": {"auth": "other"}}})
