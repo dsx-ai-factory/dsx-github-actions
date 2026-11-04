@@ -29,6 +29,35 @@ test('plans a product image without chart dependencies', t => {
   assert.deepEqual(plan(inputs(), fixture(t)), { images: [image], charts: [] });
 });
 
+test('accepts the default publisher and external publication with required evidence', t => {
+  const root = fixture(t);
+  for (const overrides of [
+    { RC_ARTIFACT_PUBLISHER: 'github', RC_PROMOTION_MANIFEST: 'false' },
+    { RC_ARTIFACT_PUBLISHER: 'external', RC_PROMOTION_MANIFEST: 'true' },
+  ]) {
+    assert.deepEqual(plan(inputs(overrides), root), { images: [image], charts: [] });
+  }
+});
+
+test('rejects invalid publication policy before emitting a plan', t => {
+  const root = fixture(t);
+  const output = path.join(root, 'output');
+  for (const overrides of [
+    ...['', 'GitHub', 'gitlab', 'external ', 'main', 'fake-secret-never-log'].map(value =>
+      ({ RC_ARTIFACT_PUBLISHER: value, RC_PROMOTION_MANIFEST: 'true' })),
+    ...[undefined, '', 'false', 'TRUE', '1'].map(value =>
+      ({ RC_ARTIFACT_PUBLISHER: 'external', RC_PROMOTION_MANIFEST: value })),
+  ]) {
+    const result = spawnSync(process.execPath, [path.resolve(__dirname, '../plan.cjs')], {
+      cwd: root, encoding: 'utf8',
+      env: { ...process.env, ...inputs(overrides), GITHUB_OUTPUT: output },
+    });
+    assert.equal(result.status, 1);
+    assert.equal(fs.existsSync(output), false);
+    assert.doesNotMatch(result.stdout + result.stderr, /fake-secret-never-log/);
+  }
+});
+
 test('serializes literal Docker arguments and preserves the target without shell evaluation', t => {
   const configured = { ...image, target: 'widget-runtime', buildArgs: {
     BINARY: 'widget', FLAGS: '-X example=value -tags=a,b', EMPTY: '', LITERAL: '$(touch nope)',

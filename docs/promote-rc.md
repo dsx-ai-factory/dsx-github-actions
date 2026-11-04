@@ -95,10 +95,14 @@ Missing repositories and other version-value mapping shapes are unsupported and
 rejected before any publishing.
 
 Set `source_publisher_sha` to the approved full commit SHA used to publish the
-selected RC. Keep this value when updating only the promoter. The selected Actions attempt must reference
+selected RC. Keep this value when updating only the promoter. To retain older RCs
+when upgrading the publisher, optionally list up to eight previous approved
+SHAs in `previous_source_publisher_shas`. Entries must be distinct full lowercase
+commit SHAs and must not repeat `source_publisher_sha`.
+The selected Actions attempt must reference
 `dsx-ai-factory/dsx-github-actions/.github/workflows/release-candidate-publish.yml`
-at exactly that immutable SHA. Missing provenance, mutable refs, different
-repositories, and different publisher revisions are rejected. The helper fetches
+at the primary SHA or one explicitly listed previous SHA. Missing provenance,
+mutable refs, different repositories, and unlisted revisions are rejected. The helper fetches
 the exact attempt response rather than trusting run-list provenance fields.
 The shared repository does not embed its own commit SHA.
 GitHub's caller workflow `path` may be bare or have an `@ref` suffix. Selection,
@@ -275,8 +279,10 @@ A draft GitHub release stores the exact promotion intent before registry writes.
 Attempt reports remain release assets. Matching outputs are verified and reused
 on a rerun; different outputs are never deliberately overwritten. The original
 source run and attempt remain bound to that intent.
-The intent also binds the approved shared publisher SHA; changing it during a
-partial retry is rejected.
+The intent also binds the actual shared publisher SHA verified from that source
+run, including an explicitly allowed previous publisher. Changing it during a
+partial retry is rejected. This run metadata is separate from the original RC
+manifest and does not change its digest.
 
 The stable tag points to the RC commit. It is created only after all destination
 artifacts verify, then the draft is published without changing the latest-release

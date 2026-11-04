@@ -38,6 +38,10 @@ on:
         description: Record verified registry digests for later opt-in stable promotion
         type: boolean
         default: false
+      artifact-publisher:
+        description: Artifact publication owner, github or external (requires promotion-manifest)
+        type: string
+        default: github
       environment:
         description: Protected GitHub environment for artifact credentials and deployment rules
         type: string
@@ -111,9 +115,11 @@ jobs:
           RC_IMAGES: ${{ inputs.images }}
           RC_CHARTS: ${{ inputs.charts }}
           RC_NGC_PATH: ${{ inputs.ngc-path }}
+          RC_ARTIFACT_PUBLISHER: ${{ inputs.artifact-publisher }}
+          RC_PROMOTION_MANIFEST: ${{ inputs.promotion-manifest }}
         run: node ../dsx-release-tools/.github/actions/release-artifacts/plan.cjs
       - name: Check image build prerequisites before creating a source tag
-        if: steps.plan.outputs.image-count != '0'
+        if: steps.plan.outputs.image-count != '0' && (inputs.artifact-publisher == 'github' || inputs.validate-artifacts)
         env:
           BUILDKIT_CONFIG: ${{ inputs.buildkit-config }}
         run: |
@@ -233,7 +239,7 @@ jobs:
   images:
     name: RC image (${{ matrix.name }})
     needs: [plan, release]
-    if: needs.release.outputs.should-publish == 'true' && needs.plan.outputs.image-count != '0'
+    if: inputs.artifact-publisher == 'github' && needs.release.outputs.should-publish == 'true' && needs.plan.outputs.image-count != '0'
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 60
     environment: ${{ inputs.environment }}
@@ -322,7 +328,7 @@ jobs:
   charts:
     name: RC chart (${{ matrix.name }})
     needs: [plan, release]
-    if: needs.release.outputs.should-publish == 'true' && needs.plan.outputs.chart-count != '0'
+    if: inputs.artifact-publisher == 'github' && needs.release.outputs.should-publish == 'true' && needs.plan.outputs.chart-count != '0'
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 20
     environment: ${{ inputs.environment }}
@@ -417,10 +423,14 @@ jobs:
     if: >-
       always() && inputs.promotion-manifest &&
       needs.release.outputs.should-publish == 'true' &&
-      (needs.images.result == 'success' || needs.plan.outputs.image-count == '0') &&
-      (needs.charts.result == 'success' || needs.plan.outputs.chart-count == '0')
+      ((inputs.artifact-publisher == 'external' && needs.plan.result == 'success' &&
+        needs.release.result == 'success' && needs.images.result == 'skipped' &&
+        needs.charts.result == 'skipped') ||
+       (inputs.artifact-publisher == 'github' &&
+        (needs.images.result == 'success' || needs.plan.outputs.image-count == '0') &&
+        (needs.charts.result == 'success' || needs.plan.outputs.chart-count == '0')))
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ inputs.artifact-publisher == 'external' && 190 || 20 }}
     environment: ${{ inputs.environment }}
     steps:
       - name: Select temporary registry credential paths
@@ -452,7 +462,8 @@ jobs:
           RC_IMAGES: ${{ needs.plan.outputs.images }}
           RC_CHARTS: ${{ needs.plan.outputs.charts }}
           RC_NGC_PATH: ${{ inputs.ngc-path }}
-        run: python3 dsx-release-tools/.github/actions/promote-rc/promotion.py capture
+          RC_CAPTURE_WAIT_SECONDS: ${{ inputs.artifact-publisher == 'external' && '10800' || '0' }}
+        run: python3 dsx-release-tools/.github/actions/promote-rc/promotion.py capture --wait-seconds "$RC_CAPTURE_WAIT_SECONDS"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rc-promotion-manifest-${{ needs.release.outputs.version }}-${{ github.run_attempt }}
