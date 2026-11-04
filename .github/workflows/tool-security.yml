@@ -55,12 +55,15 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/tool-fixture"
           printf 'FROM scratch\nLABEL purpose=tool-security-smoke\n' > "$RUNNER_TEMP/tool-fixture/Dockerfile"
+          printf 'debug = false\n' > "$RUNNER_TEMP/tool-buildkitd.toml"
       - name: Build and scan both platform manifests
         uses: ./.github/actions/docker-build
         with:
           image: localbuild/tool-security
           tags: smoke
           context: ${{ runner.temp }}/tool-fixture
+          dockerfile: ${{ runner.temp }}/tool-fixture/Dockerfile
+          buildkit-config: ${{ runner.temp }}/tool-buildkitd.toml
           platforms: linux/amd64,linux/arm64
           push: 'false'
           cache: 'false'

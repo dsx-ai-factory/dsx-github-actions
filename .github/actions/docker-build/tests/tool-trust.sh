@@ -32,9 +32,11 @@ run_container() {
   sequence=$((sequence + 1))
   name="tool-trust-${test_dir##*.}-$$-$sequence"
   containers+=("$name")
+  mkdir -p "$test_dir/scratch/$sequence"
   timeout --kill-after=5s "${seconds}s" docker run --rm --pull=never \
     --name "$name" --platform "$PLATFORM" --user "$(id -u):$(id -g)" \
     --cap-drop=ALL --security-opt=no-new-privileges \
+    --volume "$test_dir/scratch/$sequence:/tmp" \
     -e HOME=/tmp -e XDG_CACHE_HOME=/tmp/.cache "$@" || rc=$?
   # Killing the Docker client does not stop its container. Remove it explicitly.
   if (( rc != 0 )); then
@@ -68,7 +70,7 @@ check() {
 }
 
 for image in "$SYFT_IMAGE" "$GRYPE_IMAGE" "$SKOPEO_IMAGE"; do
-  if ! timeout --kill-after=5s 180s docker pull --platform "$PLATFORM" "$image" \
+  if ! timeout --kill-after=5s 120s docker pull --platform "$PLATFORM" "$image" \
     > "$test_dir/pull.log" 2>&1; then
     printf 'FAIL tool-image pull: %s\n' "$image" >&2
     tail -n 8 "$test_dir/pull.log" >&2
@@ -81,13 +83,13 @@ syft_env=(-e SYFT_CHECK_FOR_APP_UPDATE=false)
 grype_env=(-e GRYPE_CHECK_FOR_APP_UPDATE=false)
 # Only a fresh vulnerability DB is shared, never Docker auth or the host socket.
 db_cache=(--volume "$test_dir/db:/tmp/db" -e GRYPE_DB_CACHE_DIR=/tmp/db)
-check success 'skopeo public registry' '' run_container 90 \
+check success 'skopeo public registry' '' run_container 60 \
   "$SKOPEO_IMAGE" inspect --no-creds "docker://$fixture"
-check success 'syft public registry' '' run_container 90 "${syft_env[@]}" \
+check success 'syft public registry' '' run_container 60 "${syft_env[@]}" \
   "$SYFT_IMAGE" "registry:$fixture" --platform "$PLATFORM" -o json
-check success 'grype public DB update' '' run_container 300 "${grype_env[@]}" \
+check success 'grype public DB update' '' run_container 180 "${grype_env[@]}" \
   "${db_cache[@]}" "$GRYPE_IMAGE" db update
-check success 'grype public registry' '' run_container 90 "${grype_env[@]}" \
+check success 'grype public registry' '' run_container 60 "${grype_env[@]}" \
   "${db_cache[@]}" -e GRYPE_DB_AUTO_UPDATE=false \
   "$GRYPE_IMAGE" "registry:$fixture" --platform "$PLATFORM" -o json
 
@@ -95,7 +97,7 @@ host_skopeo=(env -i "PATH=$PATH" "HOME=$test_dir/home"
   "XDG_CONFIG_HOME=$test_dir/home" "XDG_RUNTIME_DIR=$test_dir/runtime"
   skopeo inspect --no-creds)
 if [[ "$CHECK_HOST_SKOPEO" == true ]]; then
-  check success 'host skopeo public registry' '' timeout --kill-after=5s 90s \
+  check success 'host skopeo public registry' '' timeout --kill-after=5s 60s \
     "${host_skopeo[@]}" "docker://$fixture"
 fi
 
@@ -106,18 +108,18 @@ hosts=(
   dv-g3b-aaa-noct-emudhra.we-have-a-problem.com
 )
 for host in "${hosts[@]}"; do
-  check rejection "skopeo registry $host" "$host" run_container 60 \
+  check rejection "skopeo registry $host" "$host" run_container 20 \
     "$SKOPEO_IMAGE" inspect --no-creds "docker://$host/x/y:z"
-  check rejection "syft registry $host" "$host" run_container 60 "${syft_env[@]}" \
+  check rejection "syft registry $host" "$host" run_container 20 "${syft_env[@]}" \
     "$SYFT_IMAGE" "registry:$host/x/y:z"
-  check rejection "grype registry $host" "$host" run_container 60 "${grype_env[@]}" \
+  check rejection "grype registry $host" "$host" run_container 20 "${grype_env[@]}" \
     "${db_cache[@]}" -e GRYPE_DB_AUTO_UPDATE=false "$GRYPE_IMAGE" "registry:$host/x/y:z"
   # Separate, uncached DB requests exercise Grype's HTTPS download client too.
-  check rejection "grype DB $host" "$host" run_container 60 "${grype_env[@]}" \
+  check rejection "grype DB $host" "$host" run_container 20 "${grype_env[@]}" \
     -e "GRYPE_DB_UPDATE_URL=https://$host/listing.json" -e GRYPE_DB_CACHE_DIR=/tmp/db \
     "$GRYPE_IMAGE" db update
   if [[ "$CHECK_HOST_SKOPEO" == true ]]; then
-    check rejection "host skopeo registry $host" "$host" timeout --kill-after=5s 60s \
+    check rejection "host skopeo registry $host" "$host" timeout --kill-after=5s 20s \
       "${host_skopeo[@]}" "docker://$host/x/y:z"
   fi
 done
