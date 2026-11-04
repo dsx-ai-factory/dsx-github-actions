@@ -308,6 +308,64 @@ class FernTest(unittest.TestCase):
                      GITHUB_EVENT_NAME='release', GITHUB_REF='refs/tags/v1.2.4',
                      DEFAULT_BRANCH='master', TAG_VERSION='v1.2.4')
 
+    def test_release_resolution_requires_explicit_rc_opt_in(self):
+        workflow = SCRIPTS.parents[2] / 'workflows/publish-fern-docs.yml'
+        step = self.execute([
+            'yq', '-r', '.jobs.publish.steps[] | select(.id == "resolve") | .run', str(workflow),
+        ]).stdout
+        output = self.root / 'github-output'
+        for tag in ['v1.2.3', 'v1.2.4-rc.1', 'v1.2.4-beta.1']:
+            self.git('tag', tag)
+        for tag, prerelease, rc, register, ok, publish in [
+            ('v1.2.3', 'false', 'false', 'true', True, True),
+            ('v1.2.3', 'false', 'true', 'false', True, True),
+            ('v1.2.4-rc.1', 'true', 'false', 'false', True, False),
+            ('v1.2.4-rc.1', 'true', 'true', 'false', True, True),
+            ('v1.2.4-rc.1', 'false', 'true', 'false', True, True),
+            ('v1.2.4-rc.1', 'true', 'true', 'true', False, False),
+            ('v1.2.4-beta.1', 'true', 'true', 'false', True, False),
+            ('v1.2.3', 'true', 'true', 'false', True, False),
+            ('v9.9.9-rc.1', 'true', 'true', 'false', False, False),
+            ('invalid', 'false', 'true', 'false', False, False),
+        ]:
+            with self.subTest(tag=tag, prerelease=prerelease, rc=rc, register=register):
+                output.write_text('')
+                self.execute(['bash', '-euo', 'pipefail', '-c', step], ok,
+                             GITHUB_EVENT_NAME='release', RELEASE_TAG=tag, INPUT_TAG='',
+                             RELEASE_PRERELEASE=prerelease, PUBLISH_RC=rc,
+                             REGISTER_VERSIONS=register, MAX_VERSIONS='3', GITHUB_OUTPUT=str(output))
+                if ok:
+                    self.assertIn('publish=' + str(publish).lower(), output.read_text())
+                    if publish:
+                        self.assertIn('tag=' + tag, output.read_text())
+
+    def test_rc_publish_requires_matching_release_branch(self):
+        self.git('update-ref', 'refs/remotes/origin/master', 'HEAD')
+        self.git('update-ref', 'refs/remotes/origin/release/9.9.9', 'HEAD')
+        self.git('checkout', '-b', 'release/1.2.4')
+        self.write('docs/overview.md', '# RC fix outside master\n')
+        self.commit()
+        self.git('tag', 'v1.2.4-rc.1')
+        self.git('tag', 'v9.9.9-rc.1')
+        self.git('tag', 'v8.8.8-rc.1')
+        self.git('update-ref', 'refs/remotes/origin/release/1.2.4', 'HEAD')
+        for event, ref, tag, rc, register, allowed in [
+            ('push', 'refs/tags/v1.2.4-rc.1', 'v1.2.4-rc.1', 'true', 'false', True),
+            ('release', 'refs/tags/v1.2.4-rc.1', 'v1.2.4-rc.1', 'true', 'false', True),
+            ('workflow_dispatch', 'refs/heads/master', 'v1.2.4-rc.1', 'true', 'false', True),
+            ('workflow_dispatch', 'refs/heads/release/1.2.4', 'v1.2.4-rc.1', 'true', 'false', False),
+            ('push', 'refs/tags/v1.2.4-rc.1', 'v1.2.4-rc.1', 'false', 'false', False),
+            ('push', 'refs/tags/v1.2.4-rc.1', 'v1.2.4-rc.1', 'true', 'true', False),
+            ('push', 'refs/tags/v9.9.9-rc.1', 'v9.9.9-rc.1', 'true', 'false', False),
+            ('push', 'refs/tags/v8.8.8-rc.1', 'v8.8.8-rc.1', 'true', 'false', False),
+            ('push', 'refs/tags/v1.2.4-rc.1', 'v9.9.9-rc.1', 'true', 'false', False),
+            ('push', 'refs/heads/pull-request/51', 'v1.2.4-rc.1', 'true', 'false', False),
+        ]:
+            with self.subTest(event=event, ref=ref, tag=tag, rc=rc, register=register):
+                self.execute(['bash', str(SCRIPTS / 'require-publish-event.sh')], allowed,
+                             GITHUB_EVENT_NAME=event, GITHUB_REF=ref, DEFAULT_BRANCH='master',
+                             TAG_VERSION=tag, PUBLISH_RC=rc, REGISTER_VERSIONS=register)
+
     def test_preview_page_links_escape_markdown_and_urls(self):
         spec = importlib.util.spec_from_file_location('page_links', SCRIPTS / 'page-links.py')
         module = importlib.util.module_from_spec(spec)
