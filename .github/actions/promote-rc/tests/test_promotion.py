@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -759,11 +760,12 @@ class CaptureWaitTests(unittest.TestCase):
 
         with patch.object(p.signal, "signal") as handler, \
                 patch.object(p.signal, "setitimer") as timer, \
-                patch.object(p.time, "sleep", side_effect=publish) as sleep, \
+                patch.object(p, "time") as clock, \
                 redirect_stdout(io.StringIO()):
+            clock.sleep.side_effect = publish
             result = p.capture_when_ready(config(), self.registry, self.context, 60)
         self.assertEqual(result, self.expected)
-        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(clock.sleep.call_count, 2)
         self.assertEqual(self.registry.writes, [])
         self.assertEqual(timer.call_args_list[0].args, (p.signal.ITIMER_REAL, 60))
         timer.assert_called_with(p.signal.ITIMER_REAL, 0)
@@ -773,11 +775,11 @@ class CaptureWaitTests(unittest.TestCase):
         self.registry.source_chart = None
         with patch.object(p.signal, "signal") as handler, \
                 patch.object(p.signal, "setitimer") as timer, \
-                patch.object(p.time, "sleep") as sleep, redirect_stdout(io.StringIO()):
-            sleep.side_effect = lambda _: handler.call_args_list[0].args[1](None, None)
+                patch.object(p, "time") as clock, redirect_stdout(io.StringIO()):
+            clock.sleep.side_effect = lambda _: handler.call_args_list[0].args[1](None, None)
             with self.assertRaisesRegex(p.PromotionError, "timed out"):
                 p.capture_when_ready(config(), self.registry, self.context, 30)
-        sleep.assert_called_once_with(30)
+        clock.sleep.assert_called_once_with(30)
         self.assertEqual(self.registry.writes, [])
         timer.assert_called_with(p.signal.ITIMER_REAL, 0)
         handler.assert_called_with(p.signal.SIGALRM, handler.return_value)
@@ -792,6 +794,18 @@ class CaptureWaitTests(unittest.TestCase):
         self.assertEqual(p.signal.getsignal(p.signal.SIGALRM), previous)
         self.assertEqual(p.signal.getitimer(p.signal.ITIMER_REAL), (0.0, 0.0))
         self.assertEqual(self.registry.writes, [])
+
+    def test_retry_sleep_mock_leaves_subprocess_polling_untouched(self):
+        original_sleep = time.sleep
+        with patch.object(p, "time") as clock:
+            self.assertIs(time.sleep, original_sleep)
+            # Closing the pipes before exit exercises the subprocess timeout wait.
+            result = subprocess.run([
+                sys.executable, "-c",
+                "import os, time; os.close(1); os.close(2); time.sleep(0.1)",
+            ], capture_output=True, timeout=5, check=True)
+            self.assertEqual(result.stdout, b"")
+            clock.sleep.assert_not_called()
 
     def test_invalid_cli_wait_fails_before_authentication_or_manifest_write(self):
         for operation, wait in (("capture", "-1"), ("capture", "10801"), ("promote", "30")):
@@ -817,19 +831,19 @@ class CaptureWaitTests(unittest.TestCase):
                 registry.source_chart = archive({"service/Chart.yaml": b"name: wrong\n"})
             with self.subTest(failure=failure), patch.object(p.signal, "signal"), \
                     patch.object(p.signal, "setitimer") as timer, \
-                    patch.object(p.time, "sleep") as sleep, \
+                    patch.object(p, "time") as clock, \
                     self.assertRaises((p.PromotionError, charts.InvalidChart)):
                 p.capture_when_ready(config(), registry, self.context, 60)
-            sleep.assert_not_called()
+            clock.sleep.assert_not_called()
             timer.assert_called_with(p.signal.ITIMER_REAL, 0)
             self.assertEqual(registry.writes, [])
 
     def test_default_capture_does_not_wait_and_invalid_deadlines_fail_before_reads(self):
         with patch.object(p.signal, "signal") as handler, \
-                patch.object(p.time, "sleep") as sleep:
+                patch.object(p, "time") as clock:
             self.assertEqual(p.capture_when_ready(config(), self.registry, self.context), self.expected)
             handler.assert_not_called()
-            sleep.assert_not_called()
+            clock.sleep.assert_not_called()
         for timeout in (-1, 10801, True, 0.5, "30"):
             registry = MemoryRegistry(self.data)
             with self.subTest(timeout=timeout), self.assertRaises(p.PromotionError):
