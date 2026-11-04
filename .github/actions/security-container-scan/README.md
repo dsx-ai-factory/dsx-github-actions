@@ -121,7 +121,7 @@ steps:
 | `image`              | Local container image reference to scan (must exist on the runner).                                                           | Yes      | —                            |
 | `fail-on`            | Minimum Grype severity that counts as a failure. One of `negligible`, `low`, `medium`, `high`, `critical`.                    | No       | `high`                       |
 | `fail-build`         | If `true`, fail the step when Grype finds vulnerabilities at/above `fail-on` or when SBOM/scan prerequisites fail.            | No       | `false`                      |
-| `grype-image`        | Grype container image to use for scanning. Update the version and multi-architecture digest together.                         | No       | `anchore/grype:v0.117.0@sha256:ddf9e9f204049f3a4a0955ef70873cabab6a31432125ad4f20a490b54950a253` |
+| `grype-image`        | Grype container image to use for scanning. Update the version and multi-architecture digest together.                         | No       | `anchore/grype:v0.121.1@sha256:6b06708b036f74b2cd70e94b706b4586af96d1932e6ac46255940b2e39dd44a9` |
 | `report-json`        | Filename for the JSON report.                                                                                                 | No       | `grype-results.json`         |
 | `report-sarif`       | Filename for the SARIF report.                                                                                                | No       | `grype-results.sarif`        |
 | `report-table`       | Filename for the human-readable table report (always generated).                                                              | No       | `grype-results.txt`          |

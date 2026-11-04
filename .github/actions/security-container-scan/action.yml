@@ -31,7 +31,7 @@ inputs:
   grype-image:
     description: 'Grype container image to run'
     required: false
-    default: anchore/grype:v0.117.0@sha256:ddf9e9f204049f3a4a0955ef70873cabab6a31432125ad4f20a490b54950a253
+    default: anchore/grype:v0.121.1@sha256:6b06708b036f74b2cd70e94b706b4586af96d1932e6ac46255940b2e39dd44a9
   report-json:
     description: 'Filename for JSON report'
     required: false
