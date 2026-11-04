@@ -36,7 +36,7 @@ Double-backtick ``inline <br> { code``.
 ```
 ````
 
-    <br> { <!-- ignored in indented code -->
+    <br /> Indented text with an escaped \\{brace.
 """
         )
         self.assertEqual(errors, [])
@@ -47,6 +47,15 @@ Double-backtick ``inline <br> { code``.
         self.assertIn("non-self-closing void element", errors[0])
         self.assertIn("bare {", errors[1])
         self.assertIn("HTML comment", errors[2])
+
+    def test_checks_indented_mdx_content(self) -> None:
+        for indent in ["  ", "    ", "\t"]:
+            with self.subTest(indent=repr(indent)):
+                errors = self.check("- Parent\n" + indent + "- Retry {request <br> <!-- note -->\n")
+                self.assertEqual(len(errors), 3)
+                self.assertTrue(any("bare {" in error for error in errors))
+                self.assertTrue(any("non-self-closing" in error for error in errors))
+                self.assertTrue(any("HTML comment" in error for error in errors))
 
     def test_supports_multiline_jsx_comments(self) -> None:
         errors = self.check("{/*\nIgnored { content and <br>\n*/}\nSafe text\n")

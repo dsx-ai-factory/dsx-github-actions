@@ -339,6 +339,28 @@ class FernTest(unittest.TestCase):
                     if publish:
                         self.assertIn('tag=' + tag, output.read_text())
 
+    def test_release_resolution_rejects_conflicting_input_tag(self):
+        workflow = SCRIPTS.parents[2] / 'workflows/publish-fern-docs.yml'
+        step = self.execute([
+            'yq', '-r', '.jobs.publish.steps[] | select(.id == "resolve") | .run', str(workflow),
+        ]).stdout
+        output = self.root / 'github-output'
+        self.git('tag', 'v1.2.4-rc.1')
+        self.git('tag', 'v1.2.4-rc.2')
+        for event in ['release', 'push']:
+            for requested, ok in [('', True), ('v1.2.4-rc.1', True), ('v1.2.4-rc.2', False)]:
+                with self.subTest(event=event, requested=requested):
+                    output.write_text('')
+                    self.execute(['bash', '-euo', 'pipefail', '-c', step], ok,
+                                 GITHUB_EVENT_NAME=event, GITHUB_REF='refs/tags/v1.2.4-rc.1',
+                                 RELEASE_TAG='v1.2.4-rc.1', INPUT_TAG=requested,
+                                 RELEASE_PRERELEASE='true', PUBLISH_RC='true',
+                                 REGISTER_VERSIONS='false', MAX_VERSIONS='3', GITHUB_OUTPUT=str(output))
+                    if ok:
+                        self.assertIn('tag=v1.2.4-rc.1', output.read_text())
+                    else:
+                        self.assertEqual(output.read_text(), '')
+
     def test_rc_publish_requires_matching_release_branch(self):
         self.git('update-ref', 'refs/remotes/origin/master', 'HEAD')
         self.git('update-ref', 'refs/remotes/origin/release/9.9.9', 'HEAD')

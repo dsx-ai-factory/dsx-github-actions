@@ -103,9 +103,7 @@ def check_file(path: Path) -> list[str]:
             fence_marker = fence.group("marker")
             continue
 
-        if raw_line.startswith(("    ", "\t")):
-            continue
-
+        # MDX does not treat indentation as a code block.
         line_without_code = strip_code_and_comments(raw_line)
 
         for match in VOID_ELEMENT.finditer(line_without_code):

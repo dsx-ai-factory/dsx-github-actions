@@ -109,8 +109,16 @@ jobs:
           set -eo pipefail
           if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
             TAG="${RELEASE_TAG}"
+            if [[ -n "$INPUT_TAG" && "$INPUT_TAG" != "$TAG" ]]; then
+              echo "::error::Input tag must match the event tag"
+              exit 1
+            fi
           elif [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
+            if [[ -n "$INPUT_TAG" && "$INPUT_TAG" != "$TAG" ]]; then
+              echo "::error::Input tag must match the event tag"
+              exit 1
+            fi
           elif [ -n "${INPUT_TAG}" ]; then
             TAG="${INPUT_TAG}"
           else
