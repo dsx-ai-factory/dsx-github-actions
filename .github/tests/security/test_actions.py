@@ -90,10 +90,14 @@ print(json.dumps({'Username': 'fixture', 'Secret': 'not-a-real-secret'}))
         self.assertEqual((self.root / "auth.json").stat().st_mode & 0o777, 0o600)
 
         # Null remains an absent value, unlike malformed false or non-strings.
+        (self.root / "calls").unlink()
         self.docker_config({"credHelpers": {"ghcr.io": None}, "credsStore": "test-helper"})
         result = self.run_script(AUTH, "ghcr.io/example/image", str(self.root / "auth.json"))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads((self.root / "calls").read_text()), [["get"], "ghcr.io"])
+
+        self.assertEqual(json.loads((self.root / "auth.json").read_text()), {
+            "auths": {"ghcr.io": {"auth": base64.b64encode(b"fixture:not-a-real-secret").decode()}}})
 
     def test_no_helper_preserves_only_destination_auth(self):
         self.docker_config({"auths": {"ghcr.io": {"auth": "fixture"}, "other.invalid": {"auth": "other"}}})
