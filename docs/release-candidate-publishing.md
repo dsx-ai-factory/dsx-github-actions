@@ -386,6 +386,8 @@ Each job checks a freshly fetched, authenticated NGC index before chart preparat
 If the version exists, the job downloads the chart and verifies its name, `version`, `appVersion`, and `dsx.nvidia.com/source-revision` annotation.
 A matching chart is reused without dependency resolution, metadata preparation, or packaging.
 Authentication, index, download, and metadata errors fail the job; they do not mean that the chart is missing.
+Index refresh supports Helm 3 and 4 and fails on repository errors in both versions.
+The same check is used for RC verification, verified chart reuse and stable promotion.
 
 Only a version confirmed missing from that index proceeds to preparation and packaging.
 The job validates chart metadata and declared local dependencies, then stamps the RC version and source revision.

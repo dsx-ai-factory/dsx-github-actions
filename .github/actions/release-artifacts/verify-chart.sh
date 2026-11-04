@@ -22,6 +22,7 @@ fi
   fail 'RELEASE_VERSION must be a canonical X.Y.Z-rc.N version.'
 [[ "${EXPECTED_REVISION:-}" =~ ^[0-9a-f]{40}$ ]] || fail 'EXPECTED_REVISION must be a full Git commit SHA.'
 export CHART_NAME RELEASE_VERSION EXPECTED_REVISION
+update_repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../helm-shared/scripts" && pwd)/update-repo.sh"
 
 verify_dir="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/rc-chart.XXXXXX")"
 trap 'rm -rf -- "$verify_dir"' EXIT
@@ -34,9 +35,8 @@ chart_metadata="$verify_dir/Chart.yaml"
 # Reuse helm-repo-ngc and its credentials from helm-package-push. Tool errors can
 # include authenticated URLs, so report only bounded, credential-free diagnostics.
 if [[ "$check_existing" == true ]]; then
-  helm repo update helm-repo-ngc --fail-on-repo-update-fail >/dev/null 2> "$verify_dir/update.errors" ||
+  bash "$update_repo" helm-repo-ngc ||
     fail 'Unable to refresh the NGC chart index; existence is unknown.'
-  [[ ! -s "$verify_dir/update.errors" ]] || fail 'Chart index refresh reported errors; existence is unknown.'
   # --devel is essential: RC versions are excluded by the default search range.
   # Search is a substring query; the JSON parser below enforces exact identity.
   helm search repo "helm-repo-ngc/$CHART_NAME" --versions --devel --output json \
@@ -71,7 +71,7 @@ NODE
 else
   for attempt in 1 2 3 4 5 6; do
     rm -f -- "$chart_archive"
-    if helm repo update helm-repo-ngc --fail-on-repo-update-fail >/dev/null 2>&1 &&
+    if bash "$update_repo" helm-repo-ngc &&
       helm pull "helm-repo-ngc/$CHART_NAME" --version "$RELEASE_VERSION" \
         --destination "$verify_dir" >/dev/null 2>&1; then
       break

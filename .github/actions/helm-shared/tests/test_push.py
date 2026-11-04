@@ -39,9 +39,18 @@ elif tool == "helm":
     operation = {
         ("repo", "update"): "update", ("search", "repo"): "search",
         ("env", "HELM_REPOSITORY_CONFIG"): "env", ("show", "chart"): "show",
+        ("version", "--template"): "version",
     }.get(tuple(args[:2]))
     if args[0] == "pull":
         operation = "pull"
+    if operation == "version" and args != ["version", "--template", "{{.Version}}"]:
+        operation = None
+    if operation == "update":
+        version = state["responses"]["version"][0].get("stdout", "")
+        flags = ["--fail-on-repo-update-fail"] if version.startswith("v3.") else []
+        if args != ["repo", "update", "helm-repo-ngc", *flags]:
+            state_path.write_text(json.dumps(state))
+            sys.exit("unsupported repository refresh arguments: " + " ".join(args))
     if operation != "env":
         environment = {name: os.environ.get(name, "") for name in (
             "HELM_REPOSITORY_CONFIG", "HELM_REPOSITORY_CACHE", "KUBECONFIG", "HELM_PLUGINS",
@@ -145,6 +154,7 @@ class HelmPushTest(unittest.TestCase):
             "create": [{}], "remove": [{}], "push": [{}],
             "update": [{}], "search": [search_response([])],
             "pull": [{}], "sleep": [{}], "show": [{}],
+            "version": [{"stdout": "v3.18.3\n"}],
             "env": [{"stdout": str(self.repository_config) + "\n"}],
         }
         self.state_file.write_text(json.dumps({
@@ -291,6 +301,9 @@ class HelmPushTest(unittest.TestCase):
         result = self.run_push(search=[search_response(PRESENT)])
         self.assert_status(result, "skipped")
         self.assert_no_mutations()
+        self.assertEqual(self.command_calls("helm", "version"), [
+            ["helm", "version", "--template", "{{.Version}}"],
+        ])
         self.assertEqual(self.command_calls("helm", "repo", "update"), [
             ["helm", "repo", "update", "helm-repo-ngc", "--fail-on-repo-update-fail"],
         ])
@@ -310,6 +323,49 @@ class HelmPushTest(unittest.TestCase):
             self.assertIn("$oauthtoken", environment["repository_config"])
             self.assertIn("test-repository-secret", environment["repository_config"])
             self.assertNotIn("unrelated-repository", environment["repository_config"])
+
+    def test_helm4_reuses_matching_chart_without_removed_flag_or_raw_output(self):
+        secret_url = "https://user:test-secret@registry.invalid/index.yaml?token=private-query"
+        result = self.run_push(
+            version=[{"stdout": "v4.0.0\n"}], update=[{"stdout": secret_url}],
+            search=[search_response(PRESENT)],
+        )
+        self.assert_status(result, "skipped")
+        self.assert_no_mutations()
+        self.assertEqual(self.command_calls("helm", "version"), [
+            ["helm", "version", "--template", "{{.Version}}"],
+        ])
+        self.assertEqual(self.command_calls("helm", "repo", "update"), [
+            ["helm", "repo", "update", "helm-repo-ngc"],
+        ])
+        self.assertEqual(len(self.command_calls("helm", "pull")), 1)
+        for text in ("test-secret", "registry.invalid", "private-query"):
+            self.assertNotIn(text, result.stdout + result.stderr)
+
+    def test_refresh_failure_is_closed_and_redacted_before_any_registry_write(self):
+        secret_url = "https://user:test-secret@registry.invalid/index.yaml?token=private-query"
+        for name, responses, updates in (
+            ("Helm 4 failure", {"version": [{"stdout": "v4.0.0"}],
+                                "update": [{"code": 1, "stdout": secret_url, "stderr": secret_url}]}, 1),
+            ("Helm 4 warning", {"version": [{"stdout": "v4.0.0"}],
+                                "update": [{"stdout": secret_url, "stderr": secret_url}]}, 1),
+            ("unsupported major", {"version": [{"stdout": "v5.0.0"}]}, 0),
+            ("invalid version", {"version": [{"stdout": secret_url}]}, 0),
+            ("failed version probe", {"version": [{"code": 1, "stdout": secret_url,
+                                                   "stderr": secret_url}]}, 0),
+        ):
+            with self.subTest(name=name):
+                result = self.run_push(**responses)
+                self.assert_status(result, "failed")
+                self.assert_no_mutations()
+                self.assertEqual(len(self.command_calls("helm", "version")), 1)
+                self.assertEqual(len(self.command_calls("helm", "repo", "update")), updates)
+                self.assertEqual(self.command_calls("helm", "search"), [])
+                self.assertEqual(self.command_calls("helm", "pull"), [])
+                self.assertEqual(self.command_calls("sleep"), [])
+                self.assertIn("Refusing to publish without a fresh NGC version lookup.", result.stderr)
+                for text in ("test-secret", "registry.invalid", "private-query"):
+                    self.assertNotIn(text, result.stdout + result.stderr)
 
     def test_legacy_skip_uploads_an_absent_version(self):
         result = self.run_push(policy="skip", version_info=[{"code": 1}])
@@ -380,7 +436,7 @@ class HelmPushTest(unittest.TestCase):
             ),
             "silent index error": ({"update": [{"code": 1}]}, "Unable to refresh the NGC chart index"),
             "index warning": (
-                {"update": [{"stderr": "cached index retained\n"}]}, "NGC chart index refresh reported errors",
+                {"update": [{"stderr": "cached index retained\n"}]}, "Chart index refresh reported errors",
             ),
             "silent search error": (
                 {"search": [{"code": 1, "stdout": "[]"}]}, "Unable to search the NGC chart index",

@@ -51,6 +51,7 @@ done
 
 if command -v helm >/dev/null 2>&1 && [ "$FORCE" = false ]; then
   log_info "Helm already available, skipping installation. Use --force to reinstall."
+  helm version --short
   exit 0
 fi
 
