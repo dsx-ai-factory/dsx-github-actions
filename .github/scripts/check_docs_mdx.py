@@ -21,6 +21,14 @@ BARE_OPEN_BRACE = re.compile(r"(?<!\\)\{")
 # MDX permits indented fences because indented code blocks are disabled.
 FENCE = re.compile(r"^[ \t]*(?P<marker>`{3,}|~{3,})")
 LIST_ITEM = re.compile(r"^ *(?:[-+*]|[0-9]{1,9}[.)])(?P<space> +|$)")
+BLOCKQUOTE = re.compile(r"^(?P<indent> *)> ?")
+
+
+def quote_contents(line: str) -> list[str]:
+    contents = [line.expandtabs(4)]
+    while quote := BLOCKQUOTE.match(contents[-1]):
+        contents.append(quote.group("indent") + contents[-1][quote.end():])
+    return contents
 
 
 def markdown_files(paths: list[Path]) -> list[Path]:
@@ -40,7 +48,8 @@ def check_file(path: Path) -> list[str]:
     in_fence = False
     fence_marker = ""
     fence_list_indent = 0
-    list_indents: list[int] = []
+    fence_quote_depth = 0
+    list_indents: list[tuple[int, int]] = []  # Quote depth and content indent.
     in_jsx_comment = False
 
     def strip_code_and_comments(line: str) -> str:
@@ -84,17 +93,19 @@ def check_file(path: Path) -> list[str]:
 
     for line_number, raw_line in enumerate(lines, 1):
         if in_fence:
-            expanded = raw_line.expandtabs(4)
-            indent = len(expanded) - len(expanded.lstrip(" "))
-            # Leaving a list item also ends its unclosed fenced block.
-            if raw_line.strip() and indent < fence_list_indent:
+            contents = quote_contents(raw_line)
+            quoted = len(contents) > fence_quote_depth
+            fence_line = contents[fence_quote_depth] if quoted else contents[-1]
+            indent = len(fence_line) - len(fence_line.lstrip(" "))
+            # Leaving a blockquote or list item ends its unclosed fenced block.
+            if not quoted or (fence_line.strip() and indent < fence_list_indent):
                 in_fence = False
                 fence_marker = ""
             else:
                 close = re.fullmatch(
                     rf"[ \t]*{re.escape(fence_marker[0])}"
                     rf"{{{len(fence_marker)},}}[ \t]*",
-                    raw_line,
+                    fence_line,
                 )
                 if close:
                     in_fence = False
@@ -108,26 +119,32 @@ def check_file(path: Path) -> list[str]:
             raw_line = raw_line[end + 3 :]
             in_jsx_comment = False
 
-        fence_line = raw_line.expandtabs(4)
+        contents = quote_contents(raw_line)
+        quote_depth = len(contents) - 1
+        fence_line = contents[-1]
+        indent = len(fence_line) - len(fence_line.lstrip(" "))
+        while list_indents and (
+            quote_depth < list_indents[-1][0]
+            or (fence_line.strip() and indent < list_indents[-1][1])
+        ):
+            list_indents.pop()
         if fence_line.strip():
-            indent = len(fence_line) - len(fence_line.lstrip(" "))
-            while list_indents and indent < list_indents[-1]:
-                list_indents.pop()
             item = LIST_ITEM.match(fence_line)
             if item:
                 padding = len(item.group("space"))
-                # More than four spaces after a marker belong to its content.
-                content_indent = item.start("space") + (
-                    padding if 1 <= padding <= 4 else 1
-                )
-                list_indents.append(content_indent)
+                # Blank items use one space. Excess padding belongs to content.
+                if item.end() == len(fence_line) or not 1 <= padding <= 4:
+                    padding = 1
+                content_indent = item.start("space") + padding
+                list_indents.append((quote_depth, content_indent))
                 fence_line = fence_line[content_indent:]
 
         fence = FENCE.match(fence_line)
         if fence:
             in_fence = True
             fence_marker = fence.group("marker")
-            fence_list_indent = list_indents[-1] if list_indents else 0
+            fence_list_indent = list_indents[-1][1] if list_indents else 0
+            fence_quote_depth = quote_depth
             continue
 
         # MDX does not treat indentation as a code block.

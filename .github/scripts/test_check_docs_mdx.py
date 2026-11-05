@@ -102,6 +102,76 @@ Double-backtick ``inline <br> { code``.
                     self.assertEqual(len(errors), 1)
                     self.assertTrue(errors[0].endswith("bare { outside code fence"))
 
+    def test_accepts_quoted_fences(self) -> None:
+        cases = [
+            ("- Item\n", "    > "),
+            ("- Parent\n  - Child\n\n", "    > "),
+            ("- Item\n", "    > > "),
+            ("", "> "),
+            ("", "    > "),
+            ("> - Item\n", ">     "),
+        ]
+        for prefix, quote in cases:
+            for marker in ["```", "~~~"]:
+                with self.subTest(prefix=prefix, quote=quote, marker=marker):
+                    content = (
+                        prefix + quote + marker + "text\n"
+                        + quote + '{"ok": true} <br> <!-- example -->\n'
+                        + quote + marker + "\n"
+                    )
+                    self.assertEqual(self.check(content), [])
+                    errors = self.check(content + quote + "Bare { brace\n")
+                    self.assertEqual(len(errors), 1)
+                    self.assertTrue(errors[0].endswith("bare { outside code fence"))
+
+    def test_quoted_fence_ends_at_quote_boundary(self) -> None:
+        cases = [
+            ("    > ", "    Bare { brace\n"),
+            ("    > ", "\n    > Bare { brace\n"),
+            ("    > > ", "    > Bare { brace\n"),
+        ]
+        for quote, following in cases:
+            with self.subTest(quote=quote, following=following):
+                errors = self.check(
+                    "- Item\n" + quote + "```text\n" + quote + "{ ignored\n" + following
+                )
+                self.assertEqual(len(errors), 1)
+                self.assertTrue(errors[0].endswith("bare { outside code fence"))
+
+    def test_extra_quote_marker_does_not_close_fence(self) -> None:
+        errors = self.check(
+            "- Item\n"
+            "    > ```text\n"
+            "    > > ```\n"
+            "    > { ignored\n"
+            "    > ```\n"
+            "    > Bare { brace\n"
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertTrue(errors[0].endswith("bare { outside code fence"))
+
+    def test_quoted_blank_line_keeps_list_fence_open(self) -> None:
+        self.assertEqual(self.check(
+            "> - Item\n>   ```text\n>   { ignored\n>\n"
+            ">   { still ignored\n>   ```\n"
+        ), [])
+
+    def test_unquoted_blank_line_ends_quoted_list(self) -> None:
+        self.assertEqual(self.check(
+            "> - Item\n>   ```text\n>   { ignored\n\n"
+            ">     ```text\n> { ignored\n>     ```\n"
+        ), [])
+
+    def test_blank_list_item_uses_one_content_space(self) -> None:
+        for marker in ["-", "1."]:
+            for padding in [" ", "  ", "   ", "    ", "\t"]:
+                with self.subTest(marker=marker, padding=padding):
+                    content = f"{marker}{padding}\n    ```text\n    {{ ignored\n"
+                    self.assertEqual(self.check(content), [])
+                    errors = self.check(content + "Bare { brace\n")
+                    self.assertEqual(len(errors), 1)
+                    self.assertTrue(errors[0].endswith("bare { outside code fence"))
+
     def test_reports_each_unsafe_construct(self) -> None:
         errors = self.check("<br>\nBare { brace\n<!-- comment -->\n")
         self.assertEqual(len(errors), 3)
