@@ -47,7 +47,6 @@ def check_file(path: Path) -> list[str]:
     errors: list[str] = []
     in_fence = False
     fence_marker = ""
-    fence_list_indent = 0
     fence_quote_depth = 0
     list_indents: list[tuple[int, int]] = []  # Quote depth and content indent.
     in_jsx_comment = False
@@ -96,9 +95,13 @@ def check_file(path: Path) -> list[str]:
             contents = quote_contents(raw_line)
             quoted = len(contents) > fence_quote_depth
             fence_line = contents[fence_quote_depth] if quoted else contents[-1]
-            indent = len(fence_line) - len(fence_line.lstrip(" "))
+            outside_list = quoted and any(
+                contents[depth].strip()
+                and len(contents[depth]) - len(contents[depth].lstrip(" ")) < indent
+                for depth, indent in list_indents
+            )
             # Leaving a blockquote or list item ends its unclosed fenced block.
-            if not quoted or (fence_line.strip() and indent < fence_list_indent):
+            if not quoted or outside_list:
                 in_fence = False
                 fence_marker = ""
             else:
@@ -128,7 +131,9 @@ def check_file(path: Path) -> list[str]:
             or (fence_line.strip() and indent < list_indents[-1][1])
         ):
             list_indents.pop()
-        if fence_line.strip():
+        # Lists and blockquotes can alternate on the same line. Preserve list
+        # indentation so subsequent quotes and continuation lines share columns.
+        while fence_line.strip():
             item = LIST_ITEM.match(fence_line)
             if item:
                 padding = len(item.group("space"))
@@ -137,13 +142,17 @@ def check_file(path: Path) -> list[str]:
                     padding = 1
                 content_indent = item.start("space") + padding
                 list_indents.append((quote_depth, content_indent))
-                fence_line = fence_line[content_indent:]
+                fence_line = " " * content_indent + fence_line[content_indent:]
+            elif quote := BLOCKQUOTE.match(fence_line):
+                quote_depth += 1
+                fence_line = quote.group("indent") + fence_line[quote.end():]
+            else:
+                break
 
         fence = FENCE.match(fence_line)
         if fence:
             in_fence = True
             fence_marker = fence.group("marker")
-            fence_list_indent = list_indents[-1][1] if list_indents else 0
             fence_quote_depth = quote_depth
             continue
 

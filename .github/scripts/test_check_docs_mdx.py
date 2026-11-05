@@ -138,6 +138,68 @@ Double-backtick ``inline <br> { code``.
                 self.assertEqual(len(errors), 1)
                 self.assertTrue(errors[0].endswith("bare { outside code fence"))
 
+    def test_accepts_interleaved_container_fences(self) -> None:
+        cases = [
+            ("- > ", "  > "),
+            ("> - ", ">   "),
+            ("- > - ", "  >   "),
+            ("> - > ", ">   > "),
+            ("- > - > ", "  >   > "),
+            ("1. > ", "   > "),
+            ("> 1. > ", ">    > "),
+            ("- - > ", "    > "),
+        ]
+        for opening, continuation in cases:
+            for marker in ["```", "~~~", "````"]:
+                with self.subTest(opening=opening, marker=marker):
+                    content = (
+                        opening + marker + "text\n"
+                        + continuation + '{"ok": true} <br> <!-- example -->\n'
+                        + continuation + marker + "\n"
+                    )
+                    self.assertEqual(self.check(content), [])
+                    errors = self.check(content + continuation + "Bare { brace\n")
+                    self.assertEqual(len(errors), 1)
+                    self.assertTrue(errors[0].endswith("bare { outside code fence"))
+
+    def test_interleaved_fence_ends_at_container_boundary(self) -> None:
+        cases = [
+            (
+                "- > ```text\n  > { ignored\n",
+                ["  Bare { brace", "Bare { brace", ">   Bare { brace",
+                 "- > Bare { brace", "\n  > Bare { brace"],
+            ),
+            (
+                "> - > ```text\n>   > { ignored\n",
+                [">   Bare { brace", "> >   Bare { brace",
+                 "> - > Bare { brace", "Bare { brace"],
+            ),
+            (
+                "- > - ```text\n  >   { ignored\n",
+                ["  > Bare { brace", ">     Bare { brace", "- > Bare { brace"],
+            ),
+        ]
+        for prefix, following_lines in cases:
+            self.assertEqual(self.check(prefix), [])
+            for following in following_lines:
+                with self.subTest(prefix=prefix, following=following):
+                    errors = self.check(prefix + following + "\n")
+                    self.assertEqual(len(errors), 1)
+                    self.assertTrue(errors[0].endswith("bare { outside code fence"))
+
+    def test_interleaved_fence_closer_matches_marker_and_container(self) -> None:
+        for closer in ["```", "~~~~", "````not-a-close", "> ````"]:
+            with self.subTest(closer=closer):
+                errors = self.check(
+                    "- > ````text\n"
+                    f"  > {closer}\n"
+                    "  > { ignored <br> <!-- example -->\n"
+                    "  > `````\n"
+                    "  > Bare { brace\n"
+                )
+                self.assertEqual(len(errors), 1)
+                self.assertTrue(errors[0].endswith("bare { outside code fence"))
+
     def test_extra_quote_marker_does_not_close_fence(self) -> None:
         errors = self.check(
             "- Item\n"
