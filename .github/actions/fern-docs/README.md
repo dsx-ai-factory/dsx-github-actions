@@ -143,24 +143,31 @@ Real publishing requires `publish: true`, `FERN_TOKEN`, and a release/tag event
 or manual dispatch on the caller's default branch. A manual dispatch from a
 feature branch is rejected. This gate does not protect against callers changing
 their own workflow code; retain normal branch and runner protections.
-A stable release tag must also be reachable from the caller's default branch.
-An opted-in RC tag must be reachable from its matching release branch, as
-described below. A tag created only on a test branch cannot publish.
+Automatic stable publication requires a tag reachable from the caller's default
+branch. Automatic RC publication requires its matching release branch, as
+described below.
+
+A manual dispatch with an explicit `tag` accepts `vMAJOR.MINOR.PATCH` with an
+optional pre-release or build suffix, such as `v1.16.0-rc.5`. The tag must be
+reachable from the default branch or `origin/release/MAJOR.MINOR.PATCH`.
+Dispatch from the default branch and forward the caller's tag input to the shared
+workflow. This works with either value of `register_versions` and does not require
+`publish_rc`. An empty tag input keeps the automatic release rules.
 
 For Identity, keep `register_versions: true`, `navigation_file: index.yml`, and
-its MDX paths. Registration uses the tag's navigation, retains the newest
-`max_versions` (default 3), and opens `docs/fern-register-TAG` after publication.
+its MDX paths. Registration uses the tag's navigation, retains the selected tag
+and the newest other versions up to `max_versions` (default 3), and opens
+`docs/fern-register-TAG` after publication.
 Merge the preceding registry PR before publishing another version. A tag without
 `index.yml` is rejected. Version and source ref remain the same; docs-only source
 overrides are not implemented.
 
 For Exchange, use `register_versions: false`, empty `navigation_file`, and
 `native_checks: false` to validate/publish the release tree without a registry PR.
-Set `publish_rc: true` to also accept `vMAJOR.MINOR.PATCH-rc.N` tags. The default
-remains stable releases only. RC publication requires `register_versions: false`
-and a tag reachable from `origin/release/MAJOR.MINOR.PATCH`. Protect those release
-branches and tags. Other prerelease formats are skipped. Manual publication
-still requires dispatch from the default branch.
+Set `publish_rc: true` to accept `vMAJOR.MINOR.PATCH-rc.N` tags during automatic
+publication. This requires `register_versions: false` and a tag reachable from
+`origin/release/MAJOR.MINOR.PATCH`. Automatic publication defaults to stable
+releases and skips other pre-release formats. Protect release branches and tags.
 
 RC publication updates the same site configured in the release's site YAML.
 It does not create a separate preview site. Selecting an older tag replaces newer

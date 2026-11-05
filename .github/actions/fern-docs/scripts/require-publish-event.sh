@@ -7,7 +7,15 @@ if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" == "refs/heads/
    [[ "$GITHUB_EVENT_NAME" == release && "$GITHUB_REF" == "refs/tags/${TAG_VERSION}" ]] ||
    [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == "refs/tags/${TAG_VERSION}" ]]; then
   source_ref="refs/remotes/origin/${DEFAULT_BRANCH}"
-  if [[ "$TAG_VERSION" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-rc\.[0-9]+$ ]]; then
+  if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && -n "${INPUT_TAG:-}" && "$INPUT_TAG" == "$TAG_VERSION" ]]; then
+    [[ "$TAG_VERSION" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || exit 1
+    release_version="${BASH_REMATCH[1]}"
+    if git merge-base --is-ancestor "refs/tags/${TAG_VERSION}" "$source_ref"; then
+      exit 0
+    fi
+    # A manually selected version can include fixes from its release branch.
+    source_ref="refs/remotes/origin/release/${release_version}"
+  elif [[ "$TAG_VERSION" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-rc\.[0-9]+$ ]]; then
     [[ "${PUBLISH_RC:-false}" == true && "${REGISTER_VERSIONS:-true}" == false ]] || exit 1
     # RC fixes can exist only on the protected branch for this release version.
     source_ref="refs/remotes/origin/release/${BASH_REMATCH[1]}"

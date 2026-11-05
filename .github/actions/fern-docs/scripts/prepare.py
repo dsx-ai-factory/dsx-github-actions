@@ -66,8 +66,7 @@ def configure(root, version, fern_working_directory='.', docs_path='', organizat
     previous = list(destination.glob('v*.yml'))
     # Validate both sides before replacing generated files or pruning old entries.
     for path in [*entries, *previous]:
-        config_path(root, path.relative_to(root).as_posix())
-        if not path.is_file() or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+\.yml', path.name):
+        if path.is_symlink() or not path.is_file() or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\.yml', path.name):
             raise ValueError('Invalid registered version')
     fern.mkdir(parents=True, exist_ok=True)
     if source != target:
@@ -132,7 +131,7 @@ def prepare(root, version, navigation, docs_directory, docs_paths, frozen, mdx, 
         if navigation != 'index.yml':
             raise ValueError('Frozen versions require root index.yml')
         for registry in sorted((fern_directory / 'versions').glob('v*.yml')):
-            if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', registry.stem):
+            if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?', registry.stem):
                 raise ValueError('Invalid registered version')
             subprocess.run([
                 sys.executable, str(SCRIPTS / 'fern-frozen-content'), registry.stem,
