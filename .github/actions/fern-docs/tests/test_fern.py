@@ -5,6 +5,7 @@ import json
 import importlib.util
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -68,13 +69,115 @@ class FernTest(unittest.TestCase):
     def test_identity_paths_pass(self):
         self.prepare()
 
+    def move_config(self):
+        self.write('.github/fern-docs.yml', (self.root / 'fern/docs.yml').read_text())
+        shutil.rmtree(self.root / 'fern')
+        self.env.update(FERN_DOCS_PATH='.github/fern-docs.yml', FERN_CLI_VERSION='5.65.2')
+
+    def test_custom_configuration_generates_fern_files(self):
+        self.move_config()
+        for organization in ['nvidia', 'another-org']:
+            with self.subTest(organization=organization):
+                self.prepare(FERN_ORGANIZATION=organization)
+                self.assertEqual(json.loads((self.root / 'fern/fern.config.json').read_text()),
+                                 {'organization': organization, 'version': '5.65.2'})
+                self.assertEqual((self.root / 'fern/docs.yml').read_bytes(),
+                                 (self.root / '.github/fern-docs.yml').read_bytes())
+        self.write('.github/fern-docs.yml', 'navigation:\n  - page: Overview\n    path: ../docs/overview.md\n')
+        self.prepare(NAVIGATION_FILE='', DOCS_PATHS='docs')
+        self.assertEqual((self.root / 'fern/docs.yml').read_bytes(),
+                         (self.root / '.github/fern-docs.yml').read_bytes())
+
+    def test_custom_configuration_requires_safe_paths_before_writing(self):
+        self.move_config()
+        for path in ['../outside.yml', '/tmp/outside.yml', '.git/config', '.github/missing.yml', 'docs/overview.md', '.github/fern-docs.yml\nextra=value']:
+            with self.subTest(path=path):
+                self.prepare(False, FERN_DOCS_PATH=path)
+                self.assertFalse((self.root / 'fern').exists())
+        for link in ['.github/alias.yml', 'alias']:
+            target = 'fern-docs.yml' if link.endswith('.yml') else '.github'
+            (self.root / link).symlink_to(target)
+            path = link if link.endswith('.yml') else link + '/fern-docs.yml'
+            self.prepare(False, FERN_DOCS_PATH=path)
+            self.assertFalse((self.root / 'fern').exists())
+
+    def test_custom_configuration_rejects_a_symlink_destination(self):
+        self.move_config()
+        (self.root / 'fern').symlink_to('docs', target_is_directory=True)
+        self.prepare(False)
+        self.assertFalse((self.root / 'docs/fern.config.json').exists())
+        self.assertEqual((self.root / 'docs/overview.md').read_text(), '# Original overview\n')
+
+    def test_custom_configuration_does_not_copy_other_files_from_github(self):
+        self.move_config()
+        self.write('.github/workflows/unrelated.yml', 'unrelated workflow\n')
+        self.write('.github/versions/other.txt', 'unrelated file\n')
+        self.prepare()
+        self.assertEqual({path.name for path in (self.root / 'fern').iterdir()},
+                         {'docs.yml', 'fern.config.json'})
+
+    def test_check_rejects_configuration_overlapping_preview_inputs(self):
+        self.move_config()
+        self.write('docs/site.yml', 'navigation:\n  - page: Overview\n    path: ../docs/overview.md\n')
+        self.assertIn('outside the overlaid documentation directory',
+                      self.prepare(False, NAVIGATION_FILE='', DOCS_PATHS='docs',
+                                   FERN_DOCS_PATH='docs/site.yml').stderr)
+        self.assertIn('separate from the overlaid navigation',
+                      self.prepare(False, FERN_DOCS_PATH='index.yml').stderr)
+
+    def test_overlay_keeps_custom_trusted_configuration(self):
+        destination = Path(self.tmp.name) / 'trusted'
+        (destination / '.github').mkdir(parents=True)
+        protected = destination / '.github/fern-docs.yml'
+        protected.write_text('trusted configuration')
+        self.write('.github/fern-docs.yml', 'untrusted configuration')
+        self.execute([sys.executable, str(SCRIPTS / 'prepare.py'), 'stage', '.',
+                      '--destination', str(destination)],
+                     NAVIGATION_FILE='', FERN_DOCS_PATH='.github/fern-docs.yml')
+        self.assertEqual(protected.read_text(), 'trusted configuration')
+        self.execute([sys.executable, str(SCRIPTS / 'prepare.py'), 'stage', '.',
+                      '--destination', str(destination)], False,
+                     NAVIGATION_FILE='', FERN_DOCS_PATH='docs/site.yml')
+        self.execute([sys.executable, str(SCRIPTS / 'prepare.py'), 'stage', '.',
+                      '--destination', str(destination)], False,
+                     FERN_DOCS_PATH='index.yml')
+
+    def test_custom_registry_survives_fresh_workspaces_and_prunes_versions(self):
+        self.move_config()
+        output = self.root / 'github-output'
+        for tag in ['v1.9.0', 'v1.10.0', 'v2.0.0', 'v2.1.0']:
+            self.git('tag', tag)
+            output.write_text('')
+            self.execute([sys.executable, str(SCRIPTS / 'prepare.py'), 'configure', '.'],
+                         GITHUB_OUTPUT=str(output))
+            self.assertEqual(output.read_text(), 'docs_path=.github/fern-docs.yml\nversions_path=.github/versions\n')
+            self.execute(['bash', str(SCRIPTS / 'register-version.sh')], TAG_VERSION=tag,
+                         MAX_VERSIONS='3', FERN_VERSIONS_DIRECTORY='.github/versions')
+            self.prepare(FROZEN_VERSIONS='true')
+            self.assertEqual((self.root / f'fern/versions/{tag}-content/docs/overview.md').read_text(),
+                             '# Original overview\n')
+            shutil.rmtree(self.root / 'fern')
+        before = (self.root / '.github/fern-docs.yml').read_bytes()
+        self.execute(['bash', str(SCRIPTS / 'register-version.sh')], TAG_VERSION='v2.1.0',
+                     MAX_VERSIONS='3', FERN_VERSIONS_DIRECTORY='.github/versions')
+        self.assertEqual(before, (self.root / '.github/fern-docs.yml').read_bytes())
+        self.prepare(FROZEN_VERSIONS='true')
+        self.assertEqual({p.name for p in (self.root / 'fern/versions').glob('v*.yml')},
+                         {'v1.10.0.yml', 'v2.0.0.yml', 'v2.1.0.yml'})
+        self.assertFalse((self.root / '.github/versions/v1.9.0.yml').exists())
+        # A repeated preparation must remove a runtime entry pruned from the source.
+        (self.root / '.github/versions/v1.10.0.yml').unlink()
+        self.execute(['yq', '-i', '.products[0].versions |= map(select(.slug != "v1.10.0"))', '.github/fern-docs.yml'])
+        self.prepare(FROZEN_VERSIONS='true')
+        self.assertFalse((self.root / 'fern/versions/v1.10.0.yml').exists())
+
     def test_fern_subdirectory_keeps_markdown_paths_at_repository_root(self):
-        (self.root / 'config').mkdir()
-        (self.root / 'fern').rename(self.root / 'config/fern')
-        self.write('config/fern/docs.yml', 'products:\n  - display-name: Identity\n    path: ../../index.yml\n')
-        self.prepare(FERN_WORKING_DIRECTORY='config')
+        (self.root / 'config with spaces').mkdir()
+        (self.root / 'fern').rename(self.root / 'config with spaces/fern')
+        self.write('config with spaces/fern/docs.yml', 'products:\n  - display-name: Identity\n    path: ../../index.yml\n')
+        self.prepare(FERN_WORKING_DIRECTORY='config with spaces')
         self.write('cmd/README.md', '# Invalid { MDX\n')
-        self.prepare(False, FERN_WORKING_DIRECTORY='config')
+        self.prepare(False, FERN_WORKING_DIRECTORY='config with spaces')
 
     def test_mdx_outside_docs_is_checked(self):
         self.write('cmd/README.md', '# Invalid { MDX\n')

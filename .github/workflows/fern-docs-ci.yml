@@ -11,8 +11,16 @@ on:
         required: false
         default: "linux-amd64-cpu4"
         type: string
+      fern_docs_path:
+        description: Caller-relative site YAML; empty uses the existing fern directory
+        type: string
+        default: ''
+      fern_organization:
+        description: Organization for the generated Fern config when fern_docs_path is set
+        type: string
+        default: nvidia
       fern_cli_version:
-        description: "Exact Fern CLI version matching fern/fern.config.json"
+        description: "Exact Fern CLI version; must match fern/fern.config.json when fern_docs_path is empty"
         required: false
         default: '5.186.0'
         type: string
@@ -89,6 +97,8 @@ jobs:
           working-directory: source
           fern-working-directory: ${{ inputs.fern_working_directory }}
           fern-cli-version: ${{ inputs.fern_cli_version }}
+          fern-docs-path: ${{ inputs.fern_docs_path }}
+          fern-organization: ${{ inputs.fern_organization }}
           docs-directory: ${{ inputs.docs_directory }}
           docs-paths: ${{ inputs.docs_paths || inputs.docs_directory }}
           navigation-file: ${{ inputs.navigation_file }}

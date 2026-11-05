@@ -13,8 +13,16 @@ on:
       runner:
         type: string
         default: ubuntu-24.04
+      fern_docs_path:
+        description: Caller-relative site YAML; empty uses the existing fern directory
+        type: string
+        default: ''
+      fern_organization:
+        description: Organization for the generated Fern config when fern_docs_path is set
+        type: string
+        default: nvidia
       fern_cli_version:
-        description: Exact Fern CLI version matching fern/fern.config.json
+        description: Exact Fern CLI version; must match fern/fern.config.json when fern_docs_path is empty
         type: string
         default: '5.186.0'
       navigation_file:
@@ -121,6 +129,7 @@ jobs:
 
       - name: Overlay PR pages on the trusted configuration
         env:
+          FERN_DOCS_PATH: ${{ inputs.fern_docs_path }}
           NAVIGATION_FILE: ${{ inputs.navigation_file }}
           DOCS_DIRECTORY: ${{ inputs.docs_directory }}
         run: python3 _fern-shared/.github/actions/fern-docs/scripts/prepare.py stage preview/site --destination trusted
@@ -130,6 +139,8 @@ jobs:
         with:
           working-directory: trusted
           fern-cli-version: ${{ inputs.fern_cli_version }}
+          fern-docs-path: ${{ inputs.fern_docs_path }}
+          fern-organization: ${{ inputs.fern_organization }}
           docs-directory: ${{ inputs.docs_directory }}
           docs-paths: ${{ inputs.docs_paths || inputs.docs_directory }}
           navigation-file: ${{ inputs.navigation_file }}
