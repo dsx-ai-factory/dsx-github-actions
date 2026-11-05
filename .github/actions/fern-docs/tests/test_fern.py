@@ -385,6 +385,37 @@ class FernTest(unittest.TestCase):
         self.prepare(FROZEN_VERSIONS='true')
         self.assertEqual((self.root / 'fern/versions/v2.1.0-content/docs/overview.md').read_text(), '# Original overview\n')
 
+    def test_version_order_uses_semver_precedence_and_ignores_build_metadata(self):
+        tags = ['v1.2.3-rc.1', 'v1.2.3', 'v1.2.3+build.2', 'v1.2.3+build.10',
+                'v1.2.3-alpha.beta', 'v1.2.3-beta.11', 'v1.2.3-alpha.1',
+                'v1.2.3-beta', 'v1.2.3-alpha', 'v1.2.3-beta.2',
+                'v2.0.0', 'v1.10.0', 'v1.3.0-rc.1']
+        result = subprocess.run([sys.executable, str(SCRIPTS / 'sort-versions.py')],
+                                input='\n'.join(tags) + '\n', capture_output=True, text=True,
+                                cwd=self.root, env=self.env, check=True)
+        self.assertEqual(result.stdout.splitlines(), [
+            'v2.0.0', 'v1.10.0', 'v1.3.0-rc.1', 'v1.2.3',
+            'v1.2.3+build.2', 'v1.2.3+build.10', 'v1.2.3-rc.1',
+            'v1.2.3-beta.11', 'v1.2.3-beta.2', 'v1.2.3-beta',
+            'v1.2.3-alpha.beta', 'v1.2.3-alpha.1', 'v1.2.3-alpha',
+        ])
+
+    def test_registration_orders_stable_before_same_core_prereleases(self):
+        for tag in ['v1.2.4-rc.1', 'v1.2.4']:
+            self.git('tag', tag)
+            self.execute(['bash', str(SCRIPTS / 'register-version.sh')], TAG_VERSION=tag, MAX_VERSIONS='3')
+        versions = json.loads(self.execute(['yq', '-o=json', '.products[0].versions', 'fern/docs.yml']).stdout)
+        self.assertEqual([version['slug'] for version in versions], ['v1.2.4', 'v1.2.4-rc.1'])
+
+    def test_registration_retains_stable_at_pruning_boundary(self):
+        for tag in ['v1.2.4-rc.1', 'v1.2.4', 'v1.2.3']:
+            self.git('tag', tag)
+            self.execute(['bash', str(SCRIPTS / 'register-version.sh')], TAG_VERSION=tag, MAX_VERSIONS='2')
+        versions = json.loads(self.execute(['yq', '-o=json', '.products[0].versions', 'fern/docs.yml']).stdout)
+        self.assertEqual([version['slug'] for version in versions], ['v1.2.4', 'v1.2.3'])
+        self.assertTrue((self.root / 'fern/versions/v1.2.4.yml').is_file())
+        self.assertFalse((self.root / 'fern/versions/v1.2.4-rc.1.yml').exists())
+
     def test_publish_event_guard(self):
         self.git('tag', 'v1.2.3')
         self.git('update-ref', 'refs/remotes/origin/master', 'HEAD')
@@ -441,6 +472,85 @@ class FernTest(unittest.TestCase):
                     self.assertIn('publish=' + str(publish).lower(), output.read_text())
                     if publish:
                         self.assertIn('tag=' + tag, output.read_text())
+
+    def test_manual_resolution_accepts_version_tags_with_and_without_registration(self):
+        workflow = SCRIPTS.parents[2] / 'workflows/publish-fern-docs.yml'
+        step = self.execute([
+            'yq', '-r', '.jobs.publish.steps[] | select(.id == "resolve") | .run', str(workflow),
+        ]).stdout
+        tags = ['v1.2.3', 'v1.2.4-rc.1', 'v1.2.4-beta.2', 'v1.2.4+build.1',
+                'v1.2.4-beta.2+build.1', 'preview', 'docs/preview', 'v1.2.4/rc.1']
+        for tag in tags:
+            self.git('tag', tag)
+        output = self.root / 'github-output'
+        for register in ['true', 'false']:
+            for tag in [*tags, 'v9.9.9-rc.1', ' v1.2.3']:
+                allowed = tag in tags[:5]
+                with self.subTest(register=register, tag=tag):
+                    output.write_text('')
+                    self.execute(['bash', '-euo', 'pipefail', '-c', step], allowed,
+                                 GITHUB_EVENT_NAME='workflow_dispatch', INPUT_TAG=tag,
+                                 RELEASE_TAG='', RELEASE_PRERELEASE='', PUBLISH_RC='false',
+                                 REGISTER_VERSIONS=register, MAX_VERSIONS='3',
+                                 GITHUB_OUTPUT=str(output))
+                    self.assertEqual(output.read_text(),
+                                     f'tag={tag}\npublish=true\n' if allowed else '')
+
+    def test_manual_registered_version_requires_navigation(self):
+        (self.root / 'index.yml').unlink()
+        self.commit()
+        self.git('tag', 'v1.2.4-rc.1')
+        workflow = SCRIPTS.parents[2] / 'workflows/publish-fern-docs.yml'
+        step = self.execute([
+            'yq', '-r', '.jobs.publish.steps[] | select(.id == "resolve") | .run', str(workflow),
+        ]).stdout
+        output = self.root / 'github-output'
+        self.execute(['bash', '-euo', 'pipefail', '-c', step], False,
+                     GITHUB_EVENT_NAME='workflow_dispatch', INPUT_TAG='v1.2.4-rc.1',
+                     RELEASE_TAG='', RELEASE_PRERELEASE='', PUBLISH_RC='false',
+                     REGISTER_VERSIONS='true', MAX_VERSIONS='3', GITHUB_OUTPUT=str(output))
+        self.assertFalse(output.exists())
+
+    def test_manual_publication_requires_trusted_version_ancestry(self):
+        self.git('tag', 'v1.2.3-rc.1')
+        self.git('update-ref', 'refs/remotes/origin/master', 'HEAD')
+        self.git('checkout', '-b', 'release/1.2.4')
+        self.write('docs/overview.md', '# Release branch fixes\n')
+        self.commit()
+        self.git('update-ref', 'refs/remotes/origin/release/1.2.4', 'HEAD')
+        for tag in ['v1.2.4-rc.1', 'v1.2.4-beta.2+build.1']:
+            self.git('tag', tag)
+        self.git('checkout', '-b', 'test/unmerged')
+        self.write('docs/overview.md', '# Unmerged fixes\n')
+        self.commit()
+        self.git('tag', 'v1.2.4-rc.2')
+        for tag, allowed in [('v1.2.3-rc.1', True), ('v1.2.4-rc.1', True),
+                             ('v1.2.4-beta.2+build.1', True), ('v1.2.4-rc.2', False),
+                             ('preview', False), ('docs/preview', False)]:
+            for ref in ['refs/heads/master', 'refs/heads/test/unmerged']:
+                for register in ['true', 'false']:
+                    with self.subTest(tag=tag, ref=ref, register=register):
+                        self.execute(['bash', str(SCRIPTS / 'require-publish-event.sh')],
+                                     allowed and ref == 'refs/heads/master',
+                                     GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REF=ref,
+                                     DEFAULT_BRANCH='master', INPUT_TAG=tag, TAG_VERSION=tag,
+                                     PUBLISH_RC='false', REGISTER_VERSIONS=register)
+
+    def test_prerelease_registry_survives_preparation_and_retains_selected_version(self):
+        self.move_config()
+        for tag in ['v2.0.0', 'v3.0.0', 'v4.0.0', 'v1.2.4-rc.1', 'v1.2.4-beta.2+build.1']:
+            self.git('tag', tag)
+            self.prepare()
+            self.execute(['bash', str(SCRIPTS / 'register-version.sh')], TAG_VERSION=tag,
+                         MAX_VERSIONS='3', FERN_VERSIONS_DIRECTORY='.github/versions')
+            self.prepare(FROZEN_VERSIONS='true')
+            self.assertEqual((self.root / f'fern/versions/{tag}-content/docs/overview.md').read_text(),
+                             '# Original overview\n')
+        versions = json.loads(self.execute(['yq', '-o=json', '.products[0].versions', '.github/fern-docs.yml']).stdout)
+        self.assertEqual([v['slug'] for v in versions], ['v4.0.0', 'v3.0.0', 'v1.2.4-beta.2+build.1'])
+        self.assertFalse((self.root / '.github/versions/v1.2.4-rc.1.yml').exists())
+        self.execute(['bash', str(SCRIPTS / 'register-version.sh')], TAG_VERSION='docs/preview',
+                     MAX_VERSIONS='3', FERN_VERSIONS_DIRECTORY='.github/versions', ok=False)
 
     def test_release_resolution_rejects_conflicting_input_tag(self):
         workflow = SCRIPTS.parents[2] / 'workflows/publish-fern-docs.yml'

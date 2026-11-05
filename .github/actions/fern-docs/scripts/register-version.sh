@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 set -euo pipefail
 
-[[ "${TAG_VERSION:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+[[ "${TAG_VERSION:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || exit 1
 [[ "${MAX_VERSIONS:-}" =~ ^[1-9][0-9]*$ ]] || exit 1
 
 FERN_DOCS_PATH=${FERN_DOCS_PATH:-fern/docs.yml}
@@ -27,8 +27,9 @@ else
   yq -i "$EXPR" "$FERN_DOCS_PATH"
 fi
 
-# Sort all version entries by semver descending
-SORTED_SLUGS=$(yq '.products[0].versions[].slug' "$FERN_DOCS_PATH" | sort -rV)
+# Stable releases sort above prereleases with the same core version.
+SORTED_SLUGS=$(yq '.products[0].versions[].slug' "$FERN_DOCS_PATH" | \
+  python3 "$(dirname "${BASH_SOURCE[0]}")/sort-versions.py")
 yq -i '.products[0].versions = []' "$FERN_DOCS_PATH"
 for slug in $SORTED_SLUGS; do
   export slug
@@ -46,11 +47,13 @@ if [ "$TOTAL" -le "$MAX_VERSIONS" ]; then
   exit 0
 fi
 
-PRUNED=$(yq ".products[0].versions | .[$MAX_VERSIONS:] | .[].slug" "$FERN_DOCS_PATH")
-yq -i ".products[0].versions |= .[:$MAX_VERSIONS]" "$FERN_DOCS_PATH"
+# Keep the selected tag even when a manual run selects an older version.
+PRUNED=$(yq ".products[0].versions | map(select(.slug != env(TAG_VERSION))) | .[$((MAX_VERSIONS - 1)):][].slug" "$FERN_DOCS_PATH")
 
 for slug in $PRUNED; do
-  [[ "$slug" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+  [[ "$slug" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] || exit 1
+  export slug
+  yq -i '.products[0].versions |= map(select(.slug != env(slug)))' "$FERN_DOCS_PATH"
   rm -f "${FERN_VERSIONS_DIRECTORY}/${slug}.yml"
   echo "Pruned $slug"
 done

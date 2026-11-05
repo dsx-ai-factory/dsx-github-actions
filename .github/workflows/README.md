@@ -22,8 +22,8 @@ change when the shared actions are updated.
 
 ## Fern documentation
 
-Use the shared validation, preview collection, preview publication, and stable
-release workflows described in [the Fern guide](../actions/fern-docs/README.md).
+Use the shared validation, preview collection, preview publication, and release
+publication workflows described in [the Fern guide](../actions/fern-docs/README.md).
 It includes Identity's multi-directory navigation and frozen-version inputs,
 Exchange's directory layout, token boundaries, and safe test settings.
 
