@@ -447,6 +447,23 @@ def read_token_environment(token):
             os.environ["GH_TOKEN"] = previous
 
 
+def app_credentials(prefix):
+    app = {name: os.environ.pop(f"{prefix}_{name.upper()}", None) for name in (
+        "app_id", "app_installation_id", "app_private_key", "app_private_key_file",
+    )}
+    if all(value is None for value in app.values()):
+        return None
+    p.require(all(p.matches(r"[1-9][0-9]{0,18}", app[name]) for name in (
+        "app_id", "app_installation_id",
+    )), f"{prefix} requires both App and installation IDs")
+    keys = [app[name] for name in ("app_private_key", "app_private_key_file")
+            if app[name] is not None]
+    p.require(len(keys) == 1 and bool(keys[0].strip()),
+              f"{prefix} requires exactly one nonempty App private key source")
+    return {"app_id": app["app_id"], "installation_id": app["app_installation_id"],
+            "private_key": app["app_private_key"], "private_key_file": app["app_private_key_file"]}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=("verify", "promote"))
@@ -456,19 +473,18 @@ def main():
     config, gate = policy(document)
     # The privileged tokens must not be inherited by registry or parser commands.
     write_token = os.environ.pop("RC_PROMOTION_GITHUB_TOKEN", "")
-    app = {name: os.environ.pop(variable, None) for name, variable in (
-        ("app_id", "RC_PROMOTION_APP_ID"), ("installation_id", "RC_PROMOTION_APP_INSTALLATION_ID"),
-        ("private_key", "RC_PROMOTION_APP_PRIVATE_KEY"),
-        ("private_key_file", "RC_PROMOTION_APP_PRIVATE_KEY_FILE"),
-    )}
-    use_app = any(value is not None for value in app.values())
+    app = app_credentials("RC_PROMOTION")
+    read_app = app_credentials("RC_VERIFICATION")
+    p.require(not (app and write_token), "configure only one GitHub promotion credential")
+    # Legacy single-App callers can still request a read-scoped token.
+    read_app = read_app or (app if not os.environ.get("GH_TOKEN") else None)
     gitlab = GitLab(gate, os.environ.pop("GITLAB_RELEASE_READ_TOKEN", ""),
                     os.environ.pop("CI_JOB_TOKEN", ""))
-    github = p.GitHub(gate["repository"], write_token=write_token)
+    github = p.GitHub(gate["repository"])
     context, project = gitlab.context(args.operation, os.environ)
     with ExitStack() as credentials, tempfile.TemporaryDirectory(prefix="gitlab-promotion-") as auth:
-        if use_app:
-            token = credentials.enter_context(installation_token(github.repository, mode="read", **app))
+        if read_app:
+            token = credentials.enter_context(installation_token(github.repository, mode="read", **read_app))
             credentials.enter_context(read_token_environment(token))
         p.require(os.environ.get("GH_TOKEN"), "an approved GitHub read credential is required")
         gitlab.check_policy(args.policy, document, context, github)
@@ -488,7 +504,7 @@ def main():
                     p.Registry(config["source_ngc_path"], config["destination_ngc_path"]),
                     Path(RESULT), args.policy, authenticate=lambda: p.authenticate_registries(config),
                     write_access=(lambda: installation_token(github.repository, mode="write", **app))
-                    if use_app else lambda: nullcontext(write_token))
+                    if app else lambda: nullcontext(write_token))
 
 
 if __name__ == "__main__":

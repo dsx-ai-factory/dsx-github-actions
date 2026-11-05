@@ -47,15 +47,24 @@ to approved HTTPS storage. Redirects never receive GitLab credentials.
 
 Keep release credentials masked and protected. Use a dedicated project-scoped
 `GITLAB_RELEASE_READ_TOKEN` with `read_api` for metadata. `CI_JOB_TOKEN` proves
-the running job's identity. RC verification also needs a GitHub read credential
-in `GH_TOKEN` with Contents and Actions read access.
+the running job's identity. For GitHub reads, configure a separate App with
+Contents and Actions read access using `RC_VERIFICATION_APP_ID`,
+`RC_VERIFICATION_APP_INSTALLATION_ID`, and `RC_VERIFICATION_APP_PRIVATE_KEY_FILE`.
+These protected variables must be available to both verification and promotion.
+`RC_VERIFICATION_APP_PRIVATE_KEY` accepts PEM text instead of a file, not both.
 
 For promotion, scope `RC_PROMOTION_APP_ID`, `RC_PROMOTION_APP_INSTALLATION_ID`,
 and the file variable `RC_PROMOTION_APP_PRIVATE_KEY_FILE` to `stable-release`.
-The App needs Contents, Actions, and Workflows permissions on the product repo.
-The adapter mints read and write tokens separately, limits them to that repo,
-and revokes them on exit. A dedicated `RC_PROMOTION_GITHUB_TOKEN` is also
-supported. Never reuse a personal token or another service's credential.
+The writer App needs Contents and Workflows write access, not Actions access.
+It is used only after deployment approval when separate read credentials are
+configured. Tokens are limited to the product repo and revoked on exit.
+
+Reads prefer the verification App, then `GH_TOKEN` (Contents and Actions read).
+Without either, the existing single-App setup still works if the promotion App
+also has Actions read access. Partial App configuration fails instead of falling
+back. A dedicated `RC_PROMOTION_GITHUB_TOKEN` remains supported instead of the
+writer App, not alongside it. Never reuse a personal token or another service's
+credential.
 
 Set `RC_PROMOTION_SOURCE_NGC_KEY` for verification. Promotion also needs
 `RC_PROMOTION_DESTINATION_NGC_KEY`, scoped to `stable-release`. Keep write-capable
