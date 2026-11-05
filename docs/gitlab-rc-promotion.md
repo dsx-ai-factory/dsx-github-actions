@@ -1,0 +1,76 @@
+# Verify and promote RCs in GitLab
+
+Use this adapter when GitLab owns NGC publishing. GitHub runs product CI and
+creates the RC tag and prerelease, then finishes. It needs no NGC credentials.
+GitLab publishes and verifies the RC, then promotes it after QA approval.
+
+## Pipeline setup
+
+Pin this repository to a reviewed full commit SHA. Run
+`.github/actions/promote-rc/gitlab.py` with Python 3 and these tools available:
+GitHub CLI, Docker Buildx, Helm 3, NGC CLI, skopeo, OpenSSL, Node.js 20.8.1 or
+newer, and mikefarah/yq v4. Install the pinned release-note dependencies with
+`npm ci --ignore-scripts --legacy-peer-deps --prefix .github/actions/promote-rc`.
+
+- GitHub: use `release-candidate-publish.yml` with `artifact-publisher: external`
+  and `promotion-manifest: false`. Remove the product's GitHub promotion workflow.
+- GitLab RC tags: run `gitlab.py verify --policy .gitlab/rc-promotion.json` in
+  `verify-rc` after every image and chart publish job. Retain
+  `rc-promotion-manifest.json` as a job artifact.
+- GitLab default branch: run `gitlab.py promote --policy .gitlab/rc-promotion.json`
+  in a manual `promote-rc` job for `web` or `api` pipelines with `RC_VERSION` set.
+  Use the protected `stable-release` environment and a non-cancelling
+  `dsx-stable-release` resource group. Set `timeout: 45m` so the job finishes
+  within the App token's one-hour lifetime. Retain `promotion-result.json`,
+  including on failure. Do not run this job from the RC tag's code.
+
+Move the existing [promotion policy](promote-rc.md#product-configuration) to
+`.gitlab/rc-promotion.json` and add:
+
+```json
+"gitlab": {
+  "api_url": "https://gitlab.example.com/api/v4",
+  "project_id": 123,
+  "repository": "owner/product",
+  "deploy_group_ids": [],
+  "approver_group_ids": []
+}
+```
+
+Replace both empty lists with the approved GitLab group IDs. Configure matching
+group rules on `stable-release`, require independent approval, and disable
+pipeline-triggerer approval. Empty lists allow RC verification but stop promotion.
+Use exact `artifact_download_hosts` only if GitLab redirects artifact downloads
+to approved HTTPS storage. Redirects never receive GitLab credentials.
+
+## Credentials
+
+Keep release credentials masked and protected. Use a dedicated project-scoped
+`GITLAB_RELEASE_READ_TOKEN` with `read_api` for metadata. `CI_JOB_TOKEN` proves
+the running job's identity. RC verification also needs a GitHub read credential
+in `GH_TOKEN` with Contents and Actions read access.
+
+For promotion, scope `RC_PROMOTION_APP_ID`, `RC_PROMOTION_APP_INSTALLATION_ID`,
+and the file variable `RC_PROMOTION_APP_PRIVATE_KEY_FILE` to `stable-release`.
+The App needs Contents, Actions, and Workflows permissions on the product repo.
+The adapter mints read and write tokens separately, limits them to that repo,
+and revokes them on exit. A dedicated `RC_PROMOTION_GITHUB_TOKEN` is also
+supported. Never reuse a personal token or another service's credential.
+
+Set `RC_PROMOTION_SOURCE_NGC_KEY` for verification. Promotion also needs
+`RC_PROMOTION_DESTINATION_NGC_KEY`, scoped to `stable-release`. Keep write-capable
+GitHub credentials out of RC verification jobs.
+
+## Release steps
+
+1. Have QA validate an RC with a successful GitLab `verify-rc` job.
+2. Run a GitLab pipeline on the current protected default branch with
+   `RC_VERSION=X.Y.Z-rc.N`.
+3. Approve the deployment through the configured groups and run `promote-rc`.
+4. GitLab verifies the recorded RC artifacts, copies images without changing
+   their digests, updates chart release metadata, and creates `vX.Y.Z` on GitHub.
+
+Conflicting stable artifacts, missing approvals, changed tags, or missing
+verification records stop promotion. Retry the same RC after a partial failure.
+RCs created before this cutover need a new RC with GitLab verification records.
+Complete credentials and environment setup before enabling the product changes.

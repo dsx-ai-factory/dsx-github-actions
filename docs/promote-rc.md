@@ -1,5 +1,8 @@
 # Promote a release candidate
 
+For GitLab-owned NGC publication, use the [GitLab adapter](gitlab-rc-promotion.md).
+The GitHub workflow below is for products that publish artifacts from GitHub.
+
 `promote-rc.yml` publishes a stable release from one verified RC. It copies images
 by digest and derives stable Helm archives from the published RC archives.
 It does not build images or resolve chart dependencies.

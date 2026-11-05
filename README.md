@@ -85,6 +85,7 @@ artifacts. Neither RC entry point updates stable or moving major tags. The
 manifest, artifact verification, reruns, and the SBOM handoff. Historical
 release branches retain their checked-in workflows until explicitly migrated.
 For opt-in stable promotion, see the [Promote RC setup guide](docs/promote-rc.md).
+For GitLab-owned publishing and promotion, use the [GitLab adapter](docs/gitlab-rc-promotion.md).
 
 Shared chart jobs check a freshly fetched, authenticated NGC index before
 preparation. Verified existing charts skip dependency resolution and packaging.
