@@ -16,9 +16,42 @@ prepares and validates docs without publishing. Runners need Bash, Python 3.12+
 and Git. The action installs Node.js and Fern CLI. The workflows and composite
 action default to Fern `5.186.0`. Callers can override it with `fern_cli_version`
 (or `fern-cli-version` when using the composite directly). The selected version
-must be exact and match `fern/fern.config.json`; `latest` is rejected.
+must be exact; `latest` is rejected. With the default layout, it must match
+`fern/fern.config.json`.
 `docs_directory`, `docs_paths`, and Lychee arguments remain
 relative to the caller root even when `fern_working_directory` is set.
+
+## Site configuration path
+
+Set these inputs on the CI, preview comment, and publish workflows to keep
+site configuration in `.github/fern-docs.yml`:
+
+```yaml
+with:
+  fern_docs_path: .github/fern-docs.yml
+  fern_organization: nvidia
+  fern_cli_version: '5.65.2'
+```
+
+`fern_docs_path` is relative to the caller checkout. The action copies that
+file to `fern/docs.yml` and generates `fern/fern.config.json` from the organization
+and CLI version inputs. The organization defaults to `nvidia`. The composite
+action uses `fern-docs-path` and `fern-organization` for these inputs.
+An empty path preserves the existing `fern/` layout.
+Custom configuration and output paths accept ASCII letters, numbers, `.`, `_`,
+`-`, and `/`. Symbolic links are rejected.
+
+Paths inside the YAML are resolved from the generated `fern/docs.yml`, including
+when the source YAML is elsewhere. Moving `fern/docs.yml` to
+`.github/fern-docs.yml` preserves `../docs/` and `../index.yml` references.
+Keep configuration outside the pages directory overlaid by previews.
+The preview collector needs only the page layout inputs. Include the new
+configuration path in the caller's CI and preview path filters.
+
+Version registration keeps `versions/v*.yml` beside the source YAML. With this
+example, registry PRs update `.github/fern-docs.yml` and `.github/versions/`.
+The action copies registry entries to `fern/versions/` and rebuilds their content
+from release tags. Add `/fern/` to the caller's `.gitignore` when using this layout.
 
 ## Identity validation
 
@@ -48,8 +81,8 @@ Lychee. Frozen pages are extracted from release tags before validation. Fetching
 full history and tags is part of the workflow.
 
 For a directory layout such as Exchange, leave `navigation_file` empty and use
-`docs_directory: docs`. Pin its Fern config and CLI to the same reviewed version
-before adoption. `docs_paths` accepts one path per line and defaults to
+`docs_directory: docs`. Select its reviewed CLI version before adoption.
+`docs_paths` accepts one path per line and defaults to
 `docs_directory`. The original Lychee `link_args` input remains available.
 Fern config, multi-source settings, product URLs, and slugs stay in the caller.
 
@@ -74,7 +107,7 @@ required: the path checker is defense in depth, not an MDX sandbox.
 
 For directory layouts such as Exchange, the staged PR docs directory replaces
 the default-branch docs directory, including deletions and renames. Navigation
-in `fern/docs.yml` still comes from the default branch: PR navigation edits are
+in the configured site YAML still comes from the default branch: PR navigation edits are
 not previewed. If that navigation references a deleted PR page, validation fails.
 Confirm this limitation with the caller's owners before migration.
 
@@ -129,11 +162,11 @@ and a tag reachable from `origin/release/MAJOR.MINOR.PATCH`. Protect those relea
 branches and tags. Other prerelease formats are skipped. Manual publication
 still requires dispatch from the default branch.
 
-RC publication updates the same site configured in the release's `fern/docs.yml`.
+RC publication updates the same site configured in the release's site YAML.
 It does not create a separate preview site. Selecting an older tag replaces newer
-content on that site. The release tree must pin
-`fern/fern.config.json` to the selected CLI version, including on existing release
-branches. Backport the caller and config changes before cutting a new RC there.
+content on that site. The release tree must contain the selected configuration
+path. With the default layout, `fern/fern.config.json` must match the CLI version.
+Backport caller and config changes to existing release branches before cutting a new RC there.
 
 ## Verification
 

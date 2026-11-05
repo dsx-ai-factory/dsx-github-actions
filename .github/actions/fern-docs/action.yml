@@ -10,8 +10,14 @@ inputs:
     description: Caller-relative directory where Fern runs; Markdown paths remain caller-relative
     default: '.'
   fern-cli-version:
-    description: Exact Fern version matching fern/fern.config.json
+    description: Exact Fern version; must match fern/fern.config.json when fern-docs-path is empty
     default: '5.186.0'
+  fern-docs-path:
+    description: Caller-relative site YAML to copy to fern/docs.yml; empty uses the existing fern directory
+    default: ''
+  fern-organization:
+    description: Fern organization for the generated fern.config.json when fern-docs-path is set
+    default: nvidia
   docs-directory:
     description: Documentation directory for repositories without root navigation
     default: docs
@@ -37,6 +43,8 @@ runs:
         SOURCE: ${{ inputs.working-directory }}
         FERN_CLI_VERSION: ${{ inputs.fern-cli-version }}
         FERN_WORKING_DIRECTORY: ${{ inputs.fern-working-directory }}
+        FERN_DOCS_PATH: ${{ inputs.fern-docs-path }}
+        FERN_ORGANIZATION: ${{ inputs.fern-organization }}
         DOCS_DIRECTORY: ${{ inputs.docs-directory }}
         DOCS_PATHS: ${{ inputs.docs-paths }}
         NAVIGATION_FILE: ${{ inputs.navigation-file }}
