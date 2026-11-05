@@ -515,7 +515,7 @@ class AdapterTests(unittest.TestCase):
 
             env = {**environment(), "PATH": os.environ["PATH"],
                    "GITLAB_RELEASE_READ_TOKEN": "read-token", "CI_JOB_TOKEN": "job-token",
-                   "GH_TOKEN": "original-read", "RC_PROMOTION_APP_ID": "1",
+                   "RC_PROMOTION_APP_ID": "1",
                    "RC_PROMOTION_APP_INSTALLATION_ID": "2",
                    "RC_PROMOTION_APP_PRIVATE_KEY": "private-key-not-for-child-processes"}
             context = source_context() if operation == "verify" else target_context()
@@ -533,7 +533,7 @@ class AdapterTests(unittest.TestCase):
                             patch.object(p, "authenticate_registries"), \
                             patch.object(gl, "installation_token", side_effect=token):
                         gl.main()
-                    self.assertEqual(os.environ["GH_TOKEN"], "original-read")
+                    self.assertNotIn("GH_TOKEN", os.environ)
                     self.assertFalse(Path(os.environ["PROMOTION_AUTH_ROOT"]).exists())
                     self.assertTrue(Path(gl.MANIFEST if operation == "verify" else gl.RESULT).exists())
             finally:
@@ -541,6 +541,171 @@ class AdapterTests(unittest.TestCase):
             expected = (["mint-read", "revoke-read"] if operation == "verify" else
                         ["mint-read", "mint-write", "revoke-write", "revoke-read"])
             self.assertEqual(events, expected)
+
+    @contextmanager
+    def cli(self, operation, credentials):
+        context = source_context() if operation == "verify" else target_context()
+        self.client.context = Mock(return_value=(context, self.project))
+        self.client.check_policy = Mock()
+        original_directory = os.getcwd()
+        env = {**environment(), "PATH": os.environ["PATH"],
+               "GITLAB_RELEASE_READ_TOKEN": "read-token", "CI_JOB_TOKEN": "job-token",
+               **credentials}
+        try:
+            with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, env, clear=True):
+                os.chdir(directory)
+                Path(".gitlab").mkdir()
+                Path(gl.POLICY_PATH).write_bytes(p.canonical(self.document))
+                with patch.object(sys, "argv", ["gitlab.py", operation]), \
+                        patch.object(gl, "GitLab", return_value=self.client), \
+                        patch.object(p, "GitHub", return_value=self.github) as github, \
+                        patch.object(p, "Registry", return_value=self.registry), \
+                        patch.object(p, "authenticate_registries"):
+                    yield github
+        finally:
+            os.chdir(original_directory)
+
+    def test_separate_verification_app_works_without_writer_and_takes_read_precedence(self):
+        for source in ("PRIVATE_KEY", "PRIVATE_KEY_FILE"):
+            for writer_present in (False, True):
+                credentials = {"GH_TOKEN": "original-read", "RC_VERIFICATION_APP_ID": "3",
+                               "RC_VERIFICATION_APP_INSTALLATION_ID": "4",
+                               f"RC_VERIFICATION_APP_{source}": "reader-key-source"}
+                if writer_present:
+                    credentials.update({"RC_PROMOTION_APP_ID": "1", "RC_PROMOTION_APP_INSTALLATION_ID": "2",
+                                        "RC_PROMOTION_APP_PRIVATE_KEY_FILE": "writer-key-file"})
+                events = []
+
+                @contextmanager
+                def token(repository, mode, **kwargs):
+                    self.assertEqual(repository, "example/product")
+                    self.assertEqual(mode, "read")
+                    self.assertEqual(kwargs, {"app_id": "3", "installation_id": "4",
+                                             "private_key": "reader-key-source" if source == "PRIVATE_KEY" else None,
+                                             "private_key_file": "reader-key-source" if source == "PRIVATE_KEY_FILE" else None})
+                    self.assertFalse(any("_APP_" in key for key in os.environ))
+                    self.assertIsNone(self.github.write_token)
+                    events.append("read")
+                    try:
+                        yield "reader-token"
+                    finally:
+                        events.append("revoke-read")
+
+                def check_policy(*args):
+                    self.assertEqual(os.environ["GH_TOKEN"], "reader-token")
+
+                with self.subTest(source=source, writer_present=writer_present), \
+                        self.cli("verify", credentials) as github, \
+                        patch.object(gl, "installation_token", side_effect=token):
+                    self.client.check_policy.side_effect = check_policy
+                    gl.main()
+                    github.assert_called_once_with("example/product")
+                    self.assertEqual(events, ["read", "revoke-read"])
+                    self.assertEqual(os.environ["GH_TOKEN"], "original-read")
+                    self.assertFalse(Path(os.environ["PROMOTION_AUTH_ROOT"]).exists())
+                    self.assertTrue(Path(gl.MANIFEST).exists())
+
+    def test_separate_apps_promote_after_gates_and_clean_up_on_failure(self):
+        credentials = {"RC_VERIFICATION_APP_ID": "3", "RC_VERIFICATION_APP_INSTALLATION_ID": "4",
+                       "RC_VERIFICATION_APP_PRIVATE_KEY_FILE": "reader-key-file",
+                       "RC_PROMOTION_APP_ID": "1", "RC_PROMOTION_APP_INSTALLATION_ID": "2",
+                       "RC_PROMOTION_APP_PRIVATE_KEY_FILE": "writer-key-file"}
+        events = []
+        approvals = self.client.approvals
+
+        def approve(*args):
+            result = approvals(*args)
+            events.append("approved")
+            return result
+
+        self.client.approvals = Mock(side_effect=approve)
+
+        @contextmanager
+        def token(repository, mode, **kwargs):
+            self.assertEqual(repository, "example/product")
+            if mode == "write":
+                self.assertIn("approved", events)
+                self.assertEqual(os.environ["GH_TOKEN"], "reader-token")
+            self.assertEqual(kwargs, {"app_id": "3" if mode == "read" else "1",
+                                     "installation_id": "4" if mode == "read" else "2",
+                                     "private_key": None,
+                                     "private_key_file": "reader-key-file" if mode == "read" else "writer-key-file"})
+            self.assertFalse(any("_APP_" in key for key in os.environ))
+            events.append("mint-" + mode)
+            try:
+                yield "reader-token" if mode == "read" else "writer-token"
+            finally:
+                events.append("revoke-" + mode)
+
+        for failure in ("approval", "copy", None):
+            events.clear()
+            self.project["allow_pipeline_trigger_approve_deployment"] = failure == "approval"
+            self.registry.fail_chart = failure == "copy"
+            with self.subTest(failure=failure), self.cli("promote", credentials), \
+                    patch.object(gl, "installation_token", side_effect=token):
+                if failure:
+                    with self.assertRaises(p.PromotionError):
+                        gl.main()
+                else:
+                    gl.main()
+                    self.assertTrue(self.github.finished)
+                self.assertNotIn("GH_TOKEN", os.environ)
+                self.assertIsNone(self.github.write_token)
+                self.assertFalse(Path(os.environ["PROMOTION_AUTH_ROOT"]).exists())
+                self.assertEqual(events, ["mint-read", "revoke-read"] if failure == "approval" else
+                                 ["mint-read", "approved", "mint-write", "revoke-write", "revoke-read"])
+
+    def test_gh_token_read_compatibility_does_not_ask_writer_app_for_actions(self):
+        credentials = {"GH_TOKEN": "approved-read-token", "RC_PROMOTION_APP_ID": "1",
+                       "RC_PROMOTION_APP_INSTALLATION_ID": "2",
+                       "RC_PROMOTION_APP_PRIVATE_KEY_FILE": "writer-key-file"}
+        with self.cli("verify", credentials), patch.object(gl, "installation_token") as mint:
+            gl.main()
+            mint.assert_not_called()
+            self.assertEqual(os.environ["GH_TOKEN"], "approved-read-token")
+
+    def test_dedicated_write_token_compatibility_stays_behind_approval(self):
+        credentials = {"GH_TOKEN": "approved-read-token", "RC_PROMOTION_GITHUB_TOKEN": "dedicated-writer"}
+        promote = p.promote
+
+        def checked_promote(*args, **kwargs):
+            self.assertEqual(self.github.write_token, "dedicated-writer")
+            self.assertEqual(os.environ["GH_TOKEN"], "approved-read-token")
+            self.assertNotIn("RC_PROMOTION_GITHUB_TOKEN", os.environ)
+            return promote(*args, **kwargs)
+
+        with self.cli("promote", credentials) as github, \
+                patch.object(gl, "installation_token") as mint, \
+                patch.object(p, "promote", side_effect=checked_promote):
+            gl.main()
+            mint.assert_not_called()
+            github.assert_called_once_with("example/product")
+            self.assertTrue(self.github.finished)
+            self.assertIsNone(self.github.write_token)
+
+    def test_partial_or_mixed_app_credentials_never_fall_back_or_mint(self):
+        reader = {"RC_VERIFICATION_APP_ID": "3", "RC_VERIFICATION_APP_INSTALLATION_ID": "4",
+                  "RC_VERIFICATION_APP_PRIVATE_KEY_FILE": "reader-key-file"}
+        writer = {"RC_PROMOTION_APP_ID": "1", "RC_PROMOTION_APP_INSTALLATION_ID": "2",
+                  "RC_PROMOTION_APP_PRIVATE_KEY_FILE": "writer-key-file"}
+        invalid = [{**reader, "RC_VERIFICATION_APP_PRIVATE_KEY": "also-text"},
+                   {**reader, "RC_VERIFICATION_APP_PRIVATE_KEY_FILE": ""},
+                   {**reader, "RC_VERIFICATION_APP_ID": "invalid"},
+                   {**writer, "RC_VERIFICATION_APP_ID": "3"},
+                   {**writer, "RC_PROMOTION_APP_PRIVATE_KEY": "also-text"},
+                   {**writer, "RC_PROMOTION_GITHUB_TOKEN": "ambiguous-writer"}]
+        for complete in (reader, writer):
+            invalid.extend({key: value for key, value in complete.items() if key != missing}
+                           for missing in complete)
+        for credentials in invalid:
+            with self.subTest(fields=list(credentials)), \
+                    self.cli("verify", {"GH_TOKEN": "must-not-hide-misconfiguration", **credentials}), \
+                    patch.object(gl, "installation_token") as mint, self.assertRaises(p.PromotionError):
+                try:
+                    gl.main()
+                finally:
+                    mint.assert_not_called()
+                    self.client.context.assert_not_called()
 
 
 class PolicyAndTransportTests(unittest.TestCase):
