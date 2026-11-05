@@ -86,29 +86,32 @@ The wrapper accepts these inputs. All are strings except the booleans noted belo
 | `images` | `[]` | JSON array of image declarations. |
 | `charts` | `[]` | JSON array of chart declarations. |
 | `submodules` | `false` | Boolean. Recursively check out product submodules in preflight and artifact jobs. |
-| `validate-artifacts` | `false` | Boolean. Build images and lint/package charts on nonrelease events, without publishing. |
-| `promotion-manifest` | `false` | Boolean. Capture verified artifact digests in the publishing run for stable promotion. |
-| `artifact-publisher` | `github` | `github` publishes images and charts. `external` requires `promotion-manifest: true` and verifies externally published artifacts. |
-| `environment` | Required | GitHub environment used by artifact jobs. |
-| `ngc-path` | Required | NGC organization/team path, without `nvcr.io/`. |
+| `validate-artifacts` | `false` | Boolean. Build images and lint/package charts on nonrelease events. Only used by the `github` publisher. |
+| `promotion-manifest` | `false` | Boolean. Capture verified artifact digests for stable promotion. Only used by the `github` publisher. |
+| `artifact-publisher` | `github` | `github` publishes images and charts. `external` creates only the source RC tag and GitHub prerelease. |
+| `environment` | Empty | Required for `github` publishing. Not used by `external`. |
+| `ngc-path` | Empty | Required for `github`: NGC organization/team path, without `nvcr.io/`. Not used by `external`. |
 
-Each artifact array defaults to empty, but the wrapper requires at least one image or chart.
+Each artifact array defaults to empty. The `github` publisher requires at least one image or chart.
 An empty array disables that artifact type.
 Use the [source-only workflow](#source-only-workflow) when neither artifact type is needed.
 Image platforms are fixed to `linux/amd64,linux/arm64`; the wrapper has no platform input.
 
-With `artifact-publisher: external`, GitHub still calculates the RC, creates its
-immutable tag and prerelease, and uploads the promotion manifest in the same run.
-It skips GitHub image and chart publication and waits up to 180 minutes for the
-declared NGC artifacts. Only confirmed missing artifacts are retried. Image
-platforms, source revisions, chart metadata, and digests must pass the existing
-capture checks. Registry errors and provenance mismatches fail the run.
-The selected environment still supplies NGC read access through the existing
-credential mapping. No external CI credentials or API calls are required.
-Coordinate the external producer before enabling this mode and retain the
-reviewed publisher SHA in the promotion policy.
+With `artifact-publisher: external`, GitHub ends after creating the source RC tag
+and prerelease, with no NGC access. It needs no artifact inventory, NGC path,
+NGC secret, or GitHub environment. Artifact declarations are ignored. Build validation, publishing,
+verification, polling, and manifest upload are skipped even if enabled.
 
-With `validate-artifacts: true`, nonrelease events run the declared image and chart matrices after shared checks and preflight pass.
+For an external publisher such as GitLab, set `artifact-publisher: external` and
+`promotion-manifest: false`. Omit image/chart declarations, `ngc-path`, `submodules`,
+`environment`, and `secrets: inherit`. Only map `release-deploy-key` if tag rules
+require it. Run product CI/E2E before this caller job. The external
+pipeline owns artifact publishing, verification, digest records, and stable
+promotion. Remove the product's GitHub promotion entry point when switching;
+the GitHub `promote-rc.yml` workflow requires a GitHub-captured manifest.
+Default `github` publishing and promotion are unchanged.
+
+With the `github` publisher and `validate-artifacts: true`, nonrelease events run the declared image and chart matrices after shared checks and preflight pass.
 Images use the same Docker action, contexts, targets, arguments, and platforms as publishing, with `push: false` and remote caching disabled.
 Charts use the same preparation and packaging actions, with NGC push disabled.
 Both use the synthetic version `0.0.0-rc.1` and the event commit SHA.

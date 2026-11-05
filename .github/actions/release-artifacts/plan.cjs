@@ -86,9 +86,7 @@ function plan(env = process.env, root = fs.realpathSync(process.cwd())) {
   if (!['github', 'external'].includes(publisher)) {
     throw new Error('artifact-publisher must be github or external');
   }
-  if (publisher === 'external' && env.RC_PROMOTION_MANIFEST !== 'true') {
-    throw new Error('external artifact publication requires promotion-manifest: true');
-  }
+  if (publisher === 'external') return { images: [], charts: [] };
   const namespace = env.RC_NGC_PATH || '';
   if (!/^[a-z0-9][a-z0-9_-]*\/[a-z0-9][a-z0-9_-]*$/.test(namespace)) {
     throw new Error('ngc-path must be an organization/team path');
