@@ -287,7 +287,8 @@ class GitHub:
                                         absent=True)
                 require(contents is None, "competing workflow status is unknown")
 
-    def evidence(self, config, rc):
+    def source_run(self, config, rc, *, selected=None, reserved=False):
+        """Verify genuine GitHub RC CI provenance independently of artifact storage."""
         commit = self.tag(f"v{rc}")
         require(commit is not None, "RC tag does not exist")
         release = self.request(f"{self.root}/releases/tags/v{rc}")
@@ -307,15 +308,15 @@ class GitHub:
                     (not separator or caller_ref in {branch, f"refs/heads/{branch}", commit}) and
                     run["head_repository"]["full_name"] == self.repository)
 
-        reserved = self.release(version(rc))
-        if reserved:
-            intent = self.intent(reserved)
+        reservation = self.release(version(rc)) if reserved else None
+        if reservation:
+            intent = self.intent(reservation)
             require(intent["rc_version"] == rc and intent["commit"] == commit and
                     type(intent["source_run_id"]) is int and
                     type(intent["source_run_attempt"]) is int,
                     "stable release is reserved for another RC")
             selected = {"id": intent["source_run_id"], "run_attempt": intent["source_run_attempt"]}
-        else:
+        elif selected is None:
             runs = self.pages(
                 f"actions/workflows/{workflow}/runs?head_sha={commit}&event=push&status=success",
                 "workflow_runs",
@@ -323,6 +324,9 @@ class GitHub:
             runs = [run for run in runs if successful(run)]
             require(runs, "no successful RC publishing run for this exact tag")
             selected = max(runs, key=lambda item: item["id"])
+        require(type(selected.get("id")) is int and selected["id"] > 0 and
+                type(selected.get("run_attempt")) is int and selected["run_attempt"] > 0,
+                "invalid source run identity")
         # Fetch exact-attempt detail even when the list response omits provenance.
         run = self.request(f"{self.root}/actions/runs/{selected['id']}/attempts/"
                            f"{selected['run_attempt']}")
@@ -340,6 +344,10 @@ class GitHub:
                 publishers[0].get("sha") == sha and publishers[0].get("ref") in {None, sha}
                 for sha in approved),
                 "RC attempt did not use the approved immutable shared publisher")
+        return commit, run, publishers[0]["sha"]
+
+    def evidence(self, config, rc):
+        commit, run, publisher_sha = self.source_run(config, rc, reserved=True)
         artifacts = self.pages(f"actions/runs/{run['id']}/artifacts", "artifacts")
         name = f"rc-promotion-manifest-{rc}-{run['run_attempt']}"
         artifacts = [item for item in artifacts if item["name"] == name and
@@ -361,7 +369,7 @@ class GitHub:
                     "unexpected RC manifest archive contents")
             data = json.loads(archive.read("rc-promotion-manifest.json"))
         # Keep run provenance separate from the downloaded manifest and its digest.
-        return manifest(data, config, self.repository, rc, commit, run), publishers[0]["sha"]
+        return manifest(data, config, self.repository, rc, commit, run), publisher_sha
 
     @staticmethod
     def intent(release):
@@ -566,7 +574,8 @@ class Registry:
                      f"{self.destination}/{name}:{stable}"])
 
 
-def promote(config, evidence, github, registry, attempt, report_path=None, *, source_publisher_sha):
+def promote(config, evidence, github, registry, attempt, report_path=None, *, source_publisher_sha,
+            producer=None):
     policy(config)
     require(source_publisher_sha in [config["source_publisher_sha"],
                                     *config.get("previous_source_publisher_shas", [])],
@@ -608,6 +617,8 @@ def promote(config, evidence, github, registry, attempt, report_path=None, *, so
         "destination_ngc_path": config["destination_ngc_path"],
         "images": image_targets, "charts": chart_targets,
     }
+    if producer is not None:
+        intent["producer"] = producer
     release = github.reserve(stable, commit, intent)
     report = {"schema": 1, "intent": intent, "status": "partial", "artifacts": []}
 
@@ -709,7 +720,7 @@ def authenticate_registries(config, capture_only=False):
         ("promotion-source", config["source_ngc_path"], source_key),
         ("promotion-destination", config.get("destination_ngc_path"), target_key),
     ):
-        if not namespace:
+        if not namespace or (capture_only and alias == "promotion-destination"):
             continue
         command(["helm", "repo", "add", alias, f"https://helm.ngc.nvidia.com/{namespace}",
                  "--username", "$oauthtoken", "--password-stdin"], data=(key + "\n").encode())
