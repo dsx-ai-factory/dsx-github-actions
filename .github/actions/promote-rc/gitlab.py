@@ -4,16 +4,16 @@
 """Verify protected GitLab RC artifacts; promote from protected default-branch code.
 
 The policy is the existing promotion policy plus a ``gitlab`` object containing
-api_url, project_id, repository (GitHub owner/repo), deploy_group_ids and
-approver_group_ids. All GitLab reads use read_api except /job, which authenticates
+api_url, project_id, repository (GitHub owner/repo) and authorization settings.
+All GitLab reads use read_api except /job, which authenticates
 the running job with CI_JOB_TOKEN. There are no GitLab mutations in this adapter.
-Empty group lists permit verification but disable promotion. Promotion accepts
+In group mode, empty lists permit verification but disable promotion. Promotion accepts
 RC_VERSION only on the latest protected default branch's web/api pipeline.
 Optional artifact_download_hosts lists exact HTTPS storage/CDN hosts. Redirected
 artifact requests never carry GitLab credentials; metadata never follows redirects.
-GitLab authorizes membership through protected-environment rules. Instance admins
-can bypass native deployment restrictions, but this adapter still requires recorded
-independent group approvals and rejects missing or self-approved evidence.
+Authorization defaults to independent group approvals. The opt-in maintainer
+mode checks the pipeline and manual-job users' effective project membership,
+without a second approval. Native admin bypasses do not bypass these checks.
 """
 
 import argparse
@@ -66,9 +66,13 @@ def policy(document):
     p.require(isinstance(document, dict), "invalid GitLab promotion policy")
     config = p.policy({key: value for key, value in document.items() if key != "gitlab"})
     gate = document.get("gitlab")
-    p.require(isinstance(gate, dict) and set(gate) - {"artifact_download_hosts"} == {
-        "api_url", "project_id", "repository", "deploy_group_ids", "approver_group_ids",
+    p.require(isinstance(gate, dict) and set(gate) - {
+        "artifact_download_hosts", "authorization", "deploy_group_ids", "approver_group_ids",
+    } == {
+        "api_url", "project_id", "repository",
     }, "invalid GitLab policy fields")
+    authorization = gate.get("authorization", "groups")
+    p.require(authorization in ("groups", "maintainer"), "invalid GitLab authorization mode")
     url = urllib.parse.urlsplit(gate["api_url"])
     p.require(url.scheme == "https" and url.hostname and not url.username and
               not url.password and not url.query and not url.fragment and
@@ -77,10 +81,12 @@ def policy(document):
               p.matches(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", gate["repository"]),
               "invalid GitLab project or GitHub repository")
     for field in ("deploy_group_ids", "approver_group_ids"):
-        groups = gate[field]
+        groups = gate.get(field, [] if authorization == "maintainer" else None)
         p.require(isinstance(groups, list) and len(groups) <= 16 and
                   all(positive(item) for item in groups) and len(groups) == len(set(groups)),
                   "GitLab deployment and approval groups must be explicit numeric allowlists")
+        p.require(authorization != "maintainer" or not groups,
+                  "maintainer authorization cannot include group allowlists")
     hosts = gate.get("artifact_download_hosts", [])
     p.require(isinstance(hosts, list) and len(hosts) <= 16 and
               all(p.matches(r"[a-z0-9]+(?:[.-][a-z0-9]+)*\.[a-z]{2,63}", host) for host in hosts) and
@@ -316,12 +322,15 @@ class GitLab:
         return wrapper
 
     def approvals(self, context, project, env):
-        p.require(self.gate["deploy_group_ids"] and self.gate["approver_group_ids"],
-                  "stable promotion is not configured: explicit deployment and approval groups are required")
+        maintainer = self.gate.get("authorization", "groups") == "maintainer"
+        if not maintainer:
+            p.require(self.gate["deploy_group_ids"] and self.gate["approver_group_ids"],
+                      "stable promotion is not configured: explicit deployment and approval groups are required")
+            p.require(project.get("allow_pipeline_trigger_approve_deployment") is False,
+                      "group promotion requires no self-approval")
         p.require(env.get("CI_JOB_MANUAL") == "true" and
-                  env.get("CI_ENVIRONMENT_NAME") == p.ENVIRONMENT and
-                  project.get("allow_pipeline_trigger_approve_deployment") is False,
-                  "promotion requires a manual stable-release deployment with no self-approval")
+                  env.get("CI_ENVIRONMENT_NAME") == p.ENVIRONMENT,
+                  "promotion requires a manual stable-release deployment")
         protected = self.request(f"{self.root}/protected_environments/{p.ENVIRONMENT}")
         p.require(protected.get("name") == p.ENVIRONMENT, "wrong protected environment")
 
@@ -336,10 +345,29 @@ class GitLab:
                 result[group] = item
             return result
 
-        groups(protected.get("deploy_access_levels"), self.gate["deploy_group_ids"])
-        rules = groups(protected.get("approval_rules"), self.gate["approver_group_ids"])
-        for rule in rules.values():
-            p.require(positive(rule.get("required_approvals")), "deployment rule requires no approvals")
+        if maintainer:
+            levels = protected.get("deploy_access_levels")
+            p.require(isinstance(levels, list) and len(levels) == 1 and
+                      isinstance(levels[0], dict) and type(levels[0].get("access_level")) is int and
+                      levels[0]["access_level"] == 40 and levels[0].get("group_id") is None and
+                      levels[0].get("user_id") is None,
+                      "stable-release must allow only the native Maintainer deploy role")
+            p.require(protected.get("approval_rules", []) == [] and
+                      protected.get("required_approval_count", 0) == 0,
+                      "maintainer authorization requires no deployment approval rules")
+            for field in ("pipeline_user_id", "job_user_id"):
+                user = context.get(field)
+                p.require(positive(user), f"missing {field} evidence")
+                member = self.request(f"{self.root}/members/all/{user}")
+                p.require(member.get("id") == user and member.get("state") == "active" and
+                          member.get("membership_state", "active") == "active" and
+                          type(member.get("access_level")) is int and member["access_level"] >= 40,
+                          "pipeline and manual-job users must be active project Maintainers or Owners")
+        else:
+            groups(protected.get("deploy_access_levels"), self.gate["deploy_group_ids"])
+            rules = groups(protected.get("approval_rules"), self.gate["approver_group_ids"])
+            for rule in rules.values():
+                p.require(positive(rule.get("required_approvals")), "deployment rule requires no approvals")
         deployments = self.pages(f"deployments?environment={p.ENVIRONMENT}&status=running&order_by=id&sort=desc")
         found = [item for item in deployments if (item.get("deployable") or {}).get("id") == context["job_id"]]
         p.require(len(found) == 1 and positive(found[0].get("id")),
@@ -355,6 +383,10 @@ class GitLab:
                   deployment.get("status") == "running" and
                   deployment.get("pending_approval_count") == 0,
                   "deployment is not approved for this exact RC job")
+        if maintainer:
+            return {"deployment_id": deployment["id"], "job_id": context["job_id"],
+                    "pipeline_id": context["pipeline_id"], "authorization": "maintainer",
+                    "pipeline_user_id": context["pipeline_user_id"], "job_user_id": context["job_user_id"]}
         # An independent approver may also press Play on the approved job.
         triggerer = context.get("pipeline_user_id")
         p.require(positive(triggerer), "missing pipeline triggerer evidence")

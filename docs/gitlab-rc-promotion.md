@@ -43,6 +43,24 @@ pipeline-triggerer approval. Empty lists allow RC verification but stop promotio
 Use exact `artifact_download_hosts` only if GitLab redirects artifact downloads
 to approved HTTPS storage. Redirects never receive GitLab credentials.
 
+### Maintainer-only promotion
+
+To let this project's Maintainers or Owners promote without a second approval,
+set `gitlab.authorization` to `"maintainer"`. Leave `deploy_group_ids` and
+`approver_group_ids` empty (or omit them). The default, `"groups"`, keeps the
+independent group-approval flow above.
+
+Protect `stable-release` with exactly one deploy rule: `access_level: 40`.
+Remove group/user exceptions and deployment approval rules, including the legacy
+approval count. Keep `promote-rc` manual. The adapter checks both the pipeline
+creator and the person running the job through this project's `members/all`
+API: both must be active with access level 40 or higher. They can be the same
+person. The pipeline-triggerer self-approval setting does not apply in this mode.
+
+Set the project's minimum role for pipeline variable overrides to Maintainer
+to restrict who can start a pipeline with `RC_VERSION`. RC evidence, protected
+default-branch checks, digests and credential isolation are unchanged.
+
 ## Credentials
 
 Keep release credentials masked and protected. Use a dedicated project-scoped
@@ -56,7 +74,7 @@ These protected variables must be available to both verification and promotion.
 For promotion, scope `RC_PROMOTION_APP_ID`, `RC_PROMOTION_APP_INSTALLATION_ID`,
 and the file variable `RC_PROMOTION_APP_PRIVATE_KEY_FILE` to `stable-release`.
 The writer App needs Contents and Workflows write access, not Actions access.
-It is used only after deployment approval when separate read credentials are
+It is used only after deployment authorization when separate read credentials are
 configured. Tokens are limited to the product repo and revoked on exit.
 
 Reads prefer the verification App, then `GH_TOKEN` (Contents and Actions read).
@@ -75,7 +93,8 @@ GitHub credentials out of RC verification jobs.
 1. Have QA validate an RC with a successful GitLab `verify-rc` job.
 2. Run a GitLab pipeline on the current protected default branch with
    `RC_VERSION=X.Y.Z-rc.N`.
-3. Approve the deployment through the configured groups and run `promote-rc`.
+3. Run `promote-rc` as a project Maintainer or Owner, or approve through the
+   configured groups first if using group mode.
 4. GitLab verifies the recorded RC artifacts, copies images without changing
    their digests, updates chart release metadata, and creates `vX.Y.Z` on GitHub.
 

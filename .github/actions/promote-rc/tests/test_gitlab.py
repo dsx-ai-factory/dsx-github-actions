@@ -420,6 +420,158 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(p.PromotionError, "requirements changed"):
             self.client.approvals(target_context(), self.project, environment())
 
+    def maintainer_mode(self):
+        self.gate["authorization"] = "maintainer"
+        self.gate.pop("deploy_group_ids")
+        self.gate.pop("approver_group_ids")
+        self.protected.update({"deploy_access_levels": [{"access_level": 40, "group_id": None,
+                                                        "user_id": None}],
+                               "approval_rules": [], "required_approval_count": 0})
+        self.deployment.pop("approval_summary")
+        for user in (55, 66):
+            self.responses[f"{ROOT}/members/all/{user}"] = {
+                "id": user, "state": "active", "access_level": 40,
+            }
+
+    def test_maintainer_mode_checks_both_effective_memberships_without_second_approval(self):
+        self.maintainer_mode()
+        self.responses[f"{ROOT}/members/all/55"]["access_level"] = 50
+        for flag in (True, False, None):
+            with self.subTest(self_approval_setting=flag):
+                self.project["allow_pipeline_trigger_approve_deployment"] = flag
+                result = self.client.approvals(target_context(), self.project, environment())
+                self.assertEqual(result, {"authorization": "maintainer", "deployment_id": 99,
+                    "pipeline_id": 502, "job_id": 1002, "pipeline_user_id": 55, "job_user_id": 66})
+        for user in (55, 66):
+            self.client.request.assert_any_call(f"{ROOT}/members/all/{user}")
+        self.assertFalse(any(call.args[0].startswith("/groups/")
+                             for call in self.client.request.call_args_list))
+
+    def test_same_maintainer_can_start_pipeline_and_run_manual_job(self):
+        self.maintainer_mode()
+        self.responses["/job"]["user"]["id"] = 55
+        self.deployment["deployable"]["user"]["id"] = 55
+        context, project = self.client.context("promote", environment())
+        result = self.client.approvals(context, project, environment())
+        self.assertEqual(result["pipeline_user_id"], 55)
+        self.assertEqual(result["job_user_id"], 55)
+        self.assertNotIn("approved_by", result)
+
+    def test_maintainer_mode_rejects_broad_or_exception_deploy_rules(self):
+        self.maintainer_mode()
+        for levels in (None, [], {}, [None], [{"access_level": 30}], [{"access_level": 60}],
+                       [{"access_level": "40"}], [{"access_level": 40.0}],
+                       [{"access_level": 40, "group_id": 10}],
+                       [{"access_level": 40, "user_id": 66}], [{"group_id": 10}],
+                       [{"access_level": 40}, {"access_level": 40}],
+                       [{"access_level": 40}, {"user_id": 66}]):
+            self.protected["deploy_access_levels"] = levels
+            with self.subTest(levels=levels), self.assertRaises(p.PromotionError):
+                self.client.approvals(target_context(), self.project, environment())
+
+    def test_maintainer_mode_rejects_leftover_group_or_legacy_approval_rules(self):
+        self.maintainer_mode()
+        original = copy.deepcopy(self.protected)
+        for key, value in (("approval_rules", [{"group_id": 20, "required_approvals": 1}]),
+                           ("approval_rules", None), ("required_approval_count", 1),
+                           ("required_approval_count", "0"), ("name", "different")):
+            self.responses[f"{ROOT}/protected_environments/stable-release"] = {**original, key: value}
+            with self.subTest(key=key, value=value), self.assertRaises(p.PromotionError):
+                self.client.approvals(target_context(), self.project, environment())
+
+    def test_maintainer_mode_rejects_missing_inactive_or_lower_role_for_either_user(self):
+        self.maintainer_mode()
+        for user in (55, 66):
+            path = f"{ROOT}/members/all/{user}"
+            original = copy.deepcopy(self.responses[path])
+            for member in ({}, {**original, "id": 99}, {**original, "state": "blocked"},
+                           {**original, "state": None}, {**original, "membership_state": "awaiting"},
+                           {**original, "access_level": None}, {**original, "access_level": True},
+                           {**original, "access_level": "40"}, {**original, "access_level": 40.0},
+                           {**original, "access_level": 30, "is_admin": True}):
+                self.responses[path] = member
+                with self.subTest(user=user, member=member), self.assertRaises(p.PromotionError):
+                    self.client.approvals(target_context(), self.project, environment())
+            self.responses[path] = original
+
+    def test_maintainer_mode_uses_api_actor_ids_not_user_supplied_variables(self):
+        self.maintainer_mode()
+        env = {**environment(), "GITLAB_USER_ID": "999", "GITLAB_USER_LOGIN": "admin"}
+        context, project = self.client.context("promote", env)
+        self.client.approvals(context, project, env)
+        for field in ("pipeline_user_id", "job_user_id"):
+            for value in (None, True, 0, "55"):
+                with self.subTest(field=field, value=value), self.assertRaises(p.PromotionError):
+                    self.client.approvals({**context, field: value}, project, env)
+        self.assertFalse(any("/999" in call.args[0] for call in self.client.request.call_args_list))
+
+    def test_maintainer_mode_keeps_manual_environment_and_exact_deployment_gates(self):
+        self.maintainer_mode()
+        for key, value in (("CI_JOB_MANUAL", None), ("CI_JOB_MANUAL", "false"),
+                           ("CI_ENVIRONMENT_NAME", "test")):
+            with self.subTest(key=key), self.assertRaises(p.PromotionError):
+                self.client.approvals(target_context(), self.project, {**environment(), key: value})
+        for key, value in (("ref", TAG), ("sha", COMMIT), ("status", "blocked"),
+                           ("pending_approval_count", 1), ("deployable", job(1003))):
+            self.responses[f"{ROOT}/deployments/99"] = {**self.deployment, key: value}
+            with self.subTest(key=key), self.assertRaises(p.PromotionError):
+                self.client.approvals(target_context(), self.project, environment())
+
+    def test_maintainer_mode_keeps_protected_default_branch_and_pipeline_source_gates(self):
+        self.maintainer_mode()
+        for key, value in (("CI_COMMIT_REF_PROTECTED", "false"), ("CI_COMMIT_SHA", COMMIT),
+                           ("CI_COMMIT_BRANCH", "release/1.2.3"), ("CI_PROJECT_ID", "124")):
+            with self.subTest(key=key), self.assertRaises(p.PromotionError):
+                self.client.context("promote", {**environment(), key: value})
+        for source in ("push", "schedule", "trigger", "parent_pipeline", "merge_request_event"):
+            self.responses[f"{ROOT}/pipelines/502"]["source"] = source
+            with self.subTest(source=source), self.assertRaises(p.PromotionError):
+                self.client.context("promote", environment())
+
+    def test_maintainer_mode_failures_stop_before_writer_or_registry_auth(self):
+        self.maintainer_mode()
+        auth, writer = Mock(), Mock()
+        for needle in ("protected_environments", "/members/all/55", "/members/all/66", "/deployments?"):
+            def response(path, **kwargs):
+                if needle in path:
+                    raise p.PromotionError("GitLab read failed")
+                return copy.deepcopy(self.responses[path])
+            self.client.request.side_effect = response
+            with tempfile.TemporaryDirectory() as directory, self.subTest(needle=needle), \
+                    self.assertRaises(p.PromotionError):
+                self.promote(Path(directory) / gl.RESULT, authenticate=auth, write_access=writer)
+        self.responses[f"{ROOT}/members/all/55"]["access_level"] = 30
+        self.client.request.side_effect = lambda path, **kwargs: copy.deepcopy(self.responses[path])
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(p.PromotionError):
+            self.promote(Path(directory) / gl.RESULT, authenticate=auth, write_access=writer)
+        auth.assert_not_called()
+        writer.assert_not_called()
+        self.assertFalse(self.registry.writes)
+
+    def test_maintainer_promotion_keeps_rc_digests_producer_and_writer_cleanup(self):
+        self.maintainer_mode()
+        events = []
+
+        @contextmanager
+        def writer():
+            self.client.request.assert_any_call(f"{ROOT}/members/all/55")
+            self.client.request.assert_any_call(f"{ROOT}/members/all/66")
+            events.append("mint")
+            try:
+                yield "writer-token"
+            finally:
+                events.append("revoke")
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / gl.RESULT
+            result = self.promote(path, write_access=writer)
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(self.registry.images["service", "1.2.3"], IMAGE)
+            self.assertEqual(result["intent"]["producer"], self.wrapper["producer"])
+            self.assertEqual(json.loads(path.read_text())["gitlab_approval"]["authorization"], "maintainer")
+            self.assertEqual(events, ["mint", "revoke"])
+            self.assertIsNone(self.github.write_token)
+
     def test_promotion_uses_existing_engine_same_digests_and_records_gitlab_provenance(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / gl.RESULT
@@ -714,6 +866,42 @@ class PolicyAndTransportTests(unittest.TestCase):
         self.assertEqual(core, config())
         self.assertEqual(gate["repository"], "example/product")
 
+    def test_authorization_defaults_to_groups_or_accepts_explicit_groups(self):
+        candidate = document()
+        core, gate = gl.policy(candidate)
+        self.assertEqual(gate.get("authorization", "groups"), "groups")
+        candidate["gitlab"]["authorization"] = "groups"
+        self.assertEqual(gl.policy(candidate)[0], core)
+        for field in ("deploy_group_ids", "approver_group_ids"):
+            missing = copy.deepcopy(candidate)
+            missing["gitlab"].pop(field)
+            with self.subTest(field=field), self.assertRaises(p.PromotionError):
+                gl.policy(missing)
+
+    def test_maintainer_policy_needs_no_groups_and_rejects_mixed_modes(self):
+        candidate = document()
+        candidate["gitlab"]["authorization"] = "maintainer"
+        candidate["gitlab"].pop("deploy_group_ids")
+        candidate["gitlab"].pop("approver_group_ids")
+        self.assertEqual(gl.policy(candidate)[1]["authorization"], "maintainer")
+        for field in ("deploy_group_ids", "approver_group_ids"):
+            candidate["gitlab"][field] = []
+            gl.policy(candidate)
+            for value in ([10], None, False):
+                with self.subTest(field=field, value=value), self.assertRaises(p.PromotionError):
+                    gl.policy({**candidate, "gitlab": {**candidate["gitlab"], field: value}})
+
+    def test_unknown_authorization_modes_and_fields_fail_closed(self):
+        for mode in (None, "", "Maintainer", "admin", True, [], {}):
+            candidate = document()
+            candidate["gitlab"]["authorization"] = mode
+            with self.subTest(mode=mode), self.assertRaises(p.PromotionError):
+                gl.policy(candidate)
+        candidate = document()
+        candidate["gitlab"]["allow_anyone"] = True
+        with self.assertRaises(p.PromotionError):
+            gl.policy(candidate)
+
     def test_no_missing_wildcard_duplicate_or_unbounded_groups(self):
         for field in ("deploy_group_ids", "approver_group_ids"):
             for value in ([True], [0], [-1], [1, 1], ["all"], list(range(1, 18))):
@@ -814,6 +1002,9 @@ class PolicyAndTransportTests(unittest.TestCase):
         headers = dict(client.opener.open.call_args.args[0].header_items())
         self.assertEqual(headers, {"Job-token": "job-secret"})
         client.request(ROOT)
+        headers = dict(client.opener.open.call_args.args[0].header_items())
+        self.assertEqual(headers, {"Private-token": "read-secret"})
+        client.request(f"{ROOT}/members/all/55")
         headers = dict(client.opener.open.call_args.args[0].header_items())
         self.assertEqual(headers, {"Private-token": "read-secret"})
 
