@@ -81,8 +81,15 @@ jobs:
           # Assemble destination reference
           destination_ref="${INPUT_DESTINATION}:${INPUT_DESTINATION_TAG}"
 
-          echo "source_ref=${source_ref}" >> "$GITHUB_OUTPUT"
-          echo "destination_ref=${destination_ref}" >> "$GITHUB_OUTPUT"
+          # References are single-line values, not additional output records.
+          for ref in "$source_ref" "$destination_ref"; do
+            if [[ "$ref" == *$'\n'* || "$ref" == *$'\r'* ]]; then
+              echo '::error::Image references must not contain newlines'
+              exit 1
+            fi
+          done
+          printf 'source_ref=%s\ndestination_ref=%s\n' \
+            "$source_ref" "$destination_ref" >> "$GITHUB_OUTPUT"
 
       - name: Copy multi-arch manifest
         shell: bash
@@ -91,14 +98,16 @@ jobs:
           SRC_PASS: ${{ secrets.SOURCE_PASSWORD }}
           DEST_USER: ${{ secrets.DEST_USERNAME }}
           DEST_PASS: ${{ secrets.DEST_PASSWORD }}
+          SOURCE_REF: ${{ steps.refs.outputs.source_ref }}
+          DESTINATION_REF: ${{ steps.refs.outputs.destination_ref }}
 
         run: |
           set -eo pipefail
           skopeo copy --all \
             --src-creds "$SRC_USER:$SRC_PASS" \
             --dest-creds "$DEST_USER:$DEST_PASS" \
-            "docker://${{ steps.refs.outputs.source_ref }}" \
-            "docker://${{ steps.refs.outputs.destination_ref }}"
+            "docker://${SOURCE_REF}" \
+            "docker://${DESTINATION_REF}"
 
       - name: Retrieve destination digest
         id: dest_digest
@@ -106,12 +115,13 @@ jobs:
         env:
           DEST_USER: ${{ secrets.DEST_USERNAME }}
           DEST_PASS: ${{ secrets.DEST_PASSWORD }}
+          DESTINATION_REF: ${{ steps.refs.outputs.destination_ref }}
         run: |
           set -eo pipefail
           # Inspect the destination image to retrieve the digest
           digest=$(skopeo inspect --raw \
             --creds "${DEST_USER}:${DEST_PASS}" \
-            "docker://${{ steps.refs.outputs.destination_ref }}" | sha256sum | awk '{print "sha256:"$1}')
+            "docker://${DESTINATION_REF}" | sha256sum | awk '{print "sha256:"$1}')
 
           echo "digest=${digest}" >>"$GITHUB_OUTPUT"
           echo "destination digest: ${digest}"

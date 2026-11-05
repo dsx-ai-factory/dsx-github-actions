@@ -22,13 +22,14 @@ function available(name, args, pattern) {
 }
 
 const yq = available('yq', ['--version'], /mikefarah\/yq.*version v4\./);
-const helm = available('helm', ['version', '--short'], /v3\./);
+const helm = available('helm', ['version', '--short'], /v[34]\./);
+const privateUrl = 'https://test-user:fake-secret-never-log@registry.invalid/index.yaml?token=fake-query-secret';
 
 function success(result) {
   assert.equal(result.error, undefined);
   assert.equal(result.signal, null, result.stderr);
   assert.equal(result.status, 0, result.stderr);
-  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /fake-secret-never-log/);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /fake-secret-never-log|registry\.invalid|fake-query-secret/);
 }
 
 function failure(result, message) {
@@ -36,7 +37,7 @@ function failure(result, message) {
   assert.equal(result.signal, null, result.stderr);
   assert.notEqual(result.status, 0, result.stderr);
   if (message) assert.match(result.stderr, message);
-  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /fake-secret-never-log/);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /fake-secret-never-log|registry\.invalid|fake-query-secret/);
 }
 
 function snapshot(directory) {
@@ -91,15 +92,29 @@ function fixture(t) {
       repositoryConfig: env.HELM_REPOSITORY_CONFIG}) + '\\n');
     function fail() { console.log(env.TEST_SECRET); console.error(env.TEST_ERROR || env.TEST_SECRET); process.exit(1); }
     function failures(count) { return count === 'always' || Number(count) >= attempt; }
+    const helmVersion = env.TEST_HELM_VERSION === undefined ? 'v3.18.3' : env.TEST_HELM_VERSION;
+    if (args[0] === 'version') {
+      if (JSON.stringify(args) !== JSON.stringify(['version', '--template', '{{.Version}}'])) fail();
+      if (env.TEST_VERSION_FAILURE) fail();
+      console.log(helmVersion);
+      process.exit(0);
+    }
     let attempt = previous.filter(item => item.command === 'helm' && item.args[0] === args[0]).length + 1;
     if (args[0] === 'dependency') {
       if (env.TEST_DEPENDENCY_FAILURE) fail();
       process.exit(0);
     }
     if (args[0] === 'repo' && args[1] === 'update') {
-      if (JSON.stringify(args) !== JSON.stringify(['repo', 'update', 'helm-repo-ngc', '--fail-on-repo-update-fail'])) fail();
+      if (helmVersion.startsWith('v4.') && args.includes('--fail-on-repo-update-fail')) {
+        console.error('unknown flag: --fail-on-repo-update-fail');
+        process.exit(1);
+      }
+      const expected = ['repo', 'update', 'helm-repo-ngc'];
+      if (helmVersion.startsWith('v3.')) expected.push('--fail-on-repo-update-fail');
+      if (JSON.stringify(args) !== JSON.stringify(expected)) fail();
+      if (env.TEST_REPO_OUTPUT) console.log(env.TEST_REPO_OUTPUT);
       if (failures(env.TEST_REPO_FAILURES)) fail();
-      if (env.TEST_REPO_WARNING) console.error(env.TEST_SECRET);
+      if (env.TEST_REPO_WARNING) console.error(env.TEST_ERROR || env.TEST_SECRET);
     } else if (args[0] === 'search' && args[1] === 'repo') {
       if (JSON.stringify(args) !== JSON.stringify(['search', 'repo', 'helm-repo-ngc/' + env.CHART_NAME,
         '--versions', '--devel', '--output', 'json'])) fail();
@@ -299,7 +314,7 @@ test('chart preparation with actual Mike Farah yq', { skip: !yq && 'Mike Farah y
   });
 
   await t.test('real Helm lint uses temporary values without changing the packaged defaults', {
-    skip: !helm && 'Helm v3 is not installed',
+    skip: !helm && 'Helm v3 or v4 is not installed',
   }, (t) => {
     const f = fixture(t);
     f.useRealHelm();
@@ -515,7 +530,7 @@ test('chart preparation with actual Mike Farah yq', { skip: !yq && 'Mike Farah y
   });
 
   await t.test('real Helm dependency update and packaging contain aligned metadata', {
-    skip: !helm && 'Helm v3 is not installed',
+    skip: !helm && 'Helm v3 or v4 is not installed',
   }, (t) => {
     const f = fixture(t);
     f.localDependency();
@@ -549,11 +564,50 @@ test('check-existing chart mode is fail-closed and read-only', {
     const before = snapshot(f.source);
     success(f.checkExisting(f.publishedArtifact()));
     assert.deepEqual(f.events().map(({ args }) => args.slice(0, 2)), [
-      ['repo', 'update'], ['search', 'repo'], ['pull', 'helm-repo-ngc/example-service'], ['show', 'chart'],
+      ['version', '--template'], ['repo', 'update'], ['search', 'repo'],
+      ['pull', 'helm-repo-ngc/example-service'], ['show', 'chart'],
     ]);
     assert.deepEqual(snapshot(f.source), before);
     assert.deepEqual(fs.readdirSync(f.temporary), []);
   });
+
+  for (const [helmVersion, flags] of [
+    ['v3.18.3', ['--fail-on-repo-update-fail']], ['v4.0.0', []],
+  ]) {
+    await t.test(`${helmVersion} refreshes with supported flags and hides raw successful output`, (t) => {
+      const f = fixture(t);
+      success(f.checkExisting(f.publishedArtifact(), {
+        TEST_HELM_VERSION: helmVersion, TEST_REPO_OUTPUT: privateUrl,
+      }));
+      assert.deepEqual(f.events().filter(({ args }) => args[0] === 'version').map(({ args }) => args),
+        [['version', '--template', '{{.Version}}']]);
+      assert.deepEqual(f.events().filter(({ args }) => args[0] === 'repo').map(({ args }) => args),
+        [['repo', 'update', 'helm-repo-ngc', ...flags]]);
+      assert.deepEqual(fs.readdirSync(f.temporary), []);
+    });
+  }
+
+  for (const [name, options, updates] of [
+    ['Helm 4 update error', { TEST_HELM_VERSION: 'v4.0.0', TEST_REPO_FAILURES: 'always' }, 1],
+    ['Helm 4 warning with zero exit', { TEST_HELM_VERSION: 'v4.0.0', TEST_REPO_WARNING: 'true' }, 1],
+    ['unknown Helm major', { TEST_HELM_VERSION: 'v5.0.0' }, 0],
+    ['unparseable version', { TEST_HELM_VERSION: privateUrl }, 0],
+    ['empty version', { TEST_HELM_VERSION: '' }, 0],
+    ['version probe failure', { TEST_VERSION_FAILURE: 'true' }, 0],
+  ]) {
+    await t.test(`${name} is not absence and never leaks diagnostics`, (t) => {
+      const f = fixture(t);
+      const before = snapshot(f.source);
+      const result = f.checkExisting({}, {
+        ...options, TEST_ERROR: privateUrl, TEST_REPO_OUTPUT: privateUrl, TEST_SEARCH_RESULTS: '[]',
+      });
+      failure(result);
+      assert.equal(result.status, 1);
+      assert.deepEqual(f.events().map(({ args }) => args[0]), ['version', ...Array(updates).fill('repo')]);
+      assert.deepEqual(snapshot(f.source), before);
+      assert.deepEqual(fs.readdirSync(f.temporary), []);
+    });
+  }
 
   for (const [name, rows] of [
     ['empty index result', []],
@@ -570,7 +624,9 @@ test('check-existing chart mode is fail-closed and read-only', {
       assert.equal(result.status, 3, result.stderr);
       assert.equal(result.signal, null);
       assert.match(result.stdout, /absent from the fresh NGC index/);
-      assert.deepEqual(f.events().map(({ args }) => args.slice(0, 2)), [['repo', 'update'], ['search', 'repo']]);
+      assert.deepEqual(f.events().map(({ args }) => args.slice(0, 2)), [
+        ['version', '--template'], ['repo', 'update'], ['search', 'repo'],
+      ]);
       assert.deepEqual(snapshot(f.source), before);
       assert.deepEqual(fs.readdirSync(f.temporary), []);
     });
@@ -601,9 +657,9 @@ test('check-existing chart mode is fail-closed and read-only', {
       failure(result);
       assert.equal(result.status, 1, result.stderr);
       const events = f.events();
-      assert.equal(events.length, expectedCalls);
+      assert.equal(events.length, expectedCalls + 1);
       assert.ok(events.every(({ command, args }) => command === 'helm' &&
-        ['repo', 'search', 'pull', 'show'].includes(args[0])));
+        ['version', 'repo', 'search', 'pull', 'show'].includes(args[0])));
       assert.deepEqual(snapshot(f.source), before);
       assert.deepEqual(fs.readdirSync(f.temporary), []);
     });
@@ -615,13 +671,13 @@ test('check-existing chart mode is fail-closed and read-only', {
     const result = f.checkExisting(f.publishedArtifact({ annotations: {} }));
     failure(result, /metadata does not match/);
     assert.equal(result.status, 1);
-    assert.equal(f.events().length, 4);
+    assert.equal(f.events().length, 5);
     assert.deepEqual(snapshot(f.source), before);
     assert.deepEqual(fs.readdirSync(f.temporary), []);
   });
 
   await t.test('actual Helm search detects an RC index entry only when prereleases are included', {
-    skip: !helm && 'Helm v3 is not installed',
+    skip: !helm && 'Helm v3 or v4 is not installed',
   }, (t) => {
     const f = fixture(t);
     fs.mkdirSync(f.env.HELM_REPOSITORY_CACHE, { recursive: true });
@@ -660,7 +716,8 @@ test('chart registry verification with explicit Helm registry process fakes', {
     success(f.verify(f.publishedArtifact(), {}, ['-x']));
     const calls = f.events();
     assert.deepEqual(calls.map(({ args }) => args.slice(0, 2)), [
-      ['repo', 'update'], ['pull', 'helm-repo-ngc/example-service'], ['show', 'chart'],
+      ['version', '--template'], ['repo', 'update'],
+      ['pull', 'helm-repo-ngc/example-service'], ['show', 'chart'],
     ]);
     assert.ok(calls.every((call) => call.repositoryConfig === f.env.HELM_REPOSITORY_CONFIG));
     assert.deepEqual(fs.readdirSync(f.temporary), []);
@@ -676,16 +733,19 @@ test('chart registry verification with explicit Helm registry process fakes', {
     await t.test(`rejects an existing artifact with mismatched ${name} without retrying`, (t) => {
       const f = fixture(t);
       failure(f.verify(f.publishedArtifact(changes)), /metadata does not match/);
-      assert.equal(f.events().length, 3);
+      assert.equal(f.events().length, 4);
       assert.deepEqual(fs.readdirSync(f.temporary), []);
     });
   }
 
   for (const [name, options, expectedRepos, expectedPulls, expectedSleeps, ok] of [
     ['repository update recovers', { TEST_REPO_FAILURES: '2' }, 3, 1, 2, true],
+    ['Helm 4 repository update recovers', { TEST_HELM_VERSION: 'v4.0.0', TEST_REPO_FAILURES: '2' }, 3, 1, 2, true],
     ['pull recovers and clears partial archives', { TEST_PULL_FAILURES: '2' }, 3, 3, 2, true],
     ['last allowed attempt succeeds', { TEST_PULL_FAILURES: '5' }, 6, 6, 5, true],
     ['repository update exhausts retries', { TEST_REPO_FAILURES: 'always' }, 6, 0, 5, false],
+    ['Helm 4 repository warning exhausts retries', { TEST_HELM_VERSION: 'v4.0.0',
+      TEST_REPO_WARNING: 'true', TEST_ERROR: privateUrl }, 6, 0, 5, false],
     ['pull exhausts retries', { TEST_PULL_FAILURES: 'always' }, 6, 6, 5, false],
   ]) {
     await t.test(name, (t) => {

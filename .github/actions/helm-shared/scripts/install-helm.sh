@@ -17,6 +17,7 @@
 # Usage: install-helm.sh [VERSION] [--force]
 #   VERSION   Helm version to install (default: v3.13.2)
 #   --force   Install even if Helm is already present
+#   HELM_SHA256   Optional trusted archive digest; otherwise use Helm's HTTPS checksum
 #
 # shellcheck shell=bash
 set -euo pipefail
@@ -49,8 +50,14 @@ for arg in "$@"; do
   esac
 done
 
+if [[ ! "$HELM_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+  log_error "Invalid Helm version. Expected a version such as v3.13.2."
+  exit 1
+fi
+
 if command -v helm >/dev/null 2>&1 && [ "$FORCE" = false ]; then
   log_info "Helm already available, skipping installation. Use --force to reinstall."
+  helm version --short
   exit 0
 fi
 
@@ -75,7 +82,37 @@ log_info "Downloading from $DOWNLOAD_URL"
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-curl -fsSL "$DOWNLOAD_URL" -o "$WORK_DIR/helm.tar.gz"
+curl --proto '=https' --proto-redir '=https' -fsSL "$DOWNLOAD_URL" -o "$WORK_DIR/helm.tar.gz"
+
+if [[ -n "${HELM_SHA256:-}" ]]; then
+  HELM_SHA256=$(printf '%s' "$HELM_SHA256" | tr '[:upper:]' '[:lower:]')
+else
+  curl --proto '=https' --proto-redir '=https' -fsSL "${DOWNLOAD_URL}.sha256" -o "$WORK_DIR/helm.sha256"
+  HELM_SHA256=$(tr '[:upper:]' '[:lower:]' < "$WORK_DIR/helm.sha256")
+fi
+if [[ ! "$HELM_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+  log_error "Missing or invalid Helm SHA256 checksum."
+  exit 1
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+  CHECKSUM_COMMAND=(sha256sum)
+elif command -v shasum >/dev/null 2>&1; then
+  CHECKSUM_COMMAND=(shasum -a 256)
+else
+  log_error "Helm verification requires sha256sum or shasum."
+  exit 1
+fi
+
+# Validate the digest before extracting or executing any downloaded content.
+if ! (
+  cd "$WORK_DIR" || exit 1
+  printf '%s  helm.tar.gz\n' "$HELM_SHA256" | "${CHECKSUM_COMMAND[@]}" -c -
+); then
+  log_error "Helm SHA256 verification failed."
+  exit 1
+fi
+
 tar -xzf "$WORK_DIR/helm.tar.gz" -C "$WORK_DIR"
 
 INSTALL_DIR="$HOME/.local/bin"

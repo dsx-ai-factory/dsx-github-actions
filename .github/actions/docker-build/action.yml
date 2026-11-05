@@ -243,7 +243,7 @@ runs:
         REPORTS: ${{ steps.scan_vars.outputs.reports }}
         PREPARE_ATTESTATION: ${{ inputs.prepare-attestation }}
         # Tool image pins live here, alongside the action version pins.
-        SYFT_IMAGE: anchore/syft:v1.52.0@sha256:500e2d872ac019436926e8322b4fc1f39441d94d21f6f4046c6ff29b30e8cb02
+        SYFT_IMAGE: anchore/syft:v1.56.0@sha256:697ae864af1299cfa43c54b161cea3dd65c6d54de82e3dba66ea3dccb3acc313
       run: |
         bash "$GITHUB_ACTION_PATH/scripts/sbom-oci.sh"
 
@@ -256,7 +256,7 @@ runs:
         SCAN_REPORTS: ${{ steps.scan_vars.outputs.reports }}
         SCAN_FAIL_ON_CRITICAL: ${{ inputs.security-scan-fail-on-critical }}
         SCAN_CONFIG: ${{ inputs.security-scan-config }}
-        GRYPE_IMAGE: anchore/grype:v0.117.0@sha256:ddf9e9f204049f3a4a0955ef70873cabab6a31432125ad4f20a490b54950a253
+        GRYPE_IMAGE: anchore/grype:v0.121.1@sha256:6b06708b036f74b2cd70e94b706b4586af96d1932e6ac46255940b2e39dd44a9
       run: |
         bash "$GITHUB_ACTION_PATH/scripts/scan-oci.sh"
 
@@ -279,7 +279,8 @@ runs:
         EXPECTED_DIGEST: ${{ steps.build.outputs.digest }}
         REPORTS: ${{ steps.scan_vars.outputs.reports }}
         IMAGE_TAGS: ${{ inputs.prepare-attestation == 'true' && steps.scan_vars.outputs.candidate || steps.normalize.outputs.tags }}
-        SKOPEO_IMAGE: quay.io/skopeo/stable:v1.22.2-immutable@sha256:4a16d57b37617a04b3d643079a477a2848efe892dffcdf0ce56df4262b65f810
+        # The immutable release tag predates the CA update; pin the rebuilt image by digest.
+        SKOPEO_IMAGE: quay.io/skopeo/stable:v1.22.3@sha256:2681eccb8b02c495b013c2669cbf7f41d5c0b0b0e644e7c69bd3ea9bcb20641f
       run: |
         set -euo pipefail
         # Multiple tags can add duplicate layout descriptors for the same index.

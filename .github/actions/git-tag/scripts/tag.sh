@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+set +x
 set -euo pipefail
 
 log_info() { echo -e "\033[32m[INFO]\033[0m $1"; }
@@ -66,7 +67,11 @@ main() {
     log_info "Pushing tag: $tag"
 
     if [[ -n "${INPUT_GITHUB_TOKEN:-}" ]]; then
-        git push "https://${INPUT_GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$tag"
+        # Supply credentials only when Git asks, never in the remote URL or argv.
+        GIT_ASKPASS="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/git-askpass.sh" \
+        GIT_TERMINAL_PROMPT=0 \
+            git -c credential.helper= -c http.https://github.com/.extraheader= \
+            push "https://github.com/${GITHUB_REPOSITORY}.git" "$tag"
     else
         git push origin "$tag"
     fi

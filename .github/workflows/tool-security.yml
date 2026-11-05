@@ -1,0 +1,91 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Tool security
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'pull-request/**']
+
+permissions:
+  contents: read
+
+jobs:
+  trust:
+    name: Tool TLS verification (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+            host-skopeo: 'true'
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            host-skopeo: 'false'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dcarbone/install-yq-action@64b1b9eb28920bb1a4c13c05321df284f9a8f940 # v1.1.1
+      - name: Check the tool images used by the actions
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          CHECK_HOST_SKOPEO: ${{ matrix.host-skopeo }}
+        run: |
+          export SYFT_IMAGE GRYPE_IMAGE SKOPEO_IMAGE
+          SYFT_IMAGE=$(yq -r '.runs.steps[].env.SYFT_IMAGE | select(. != null)' .github/actions/docker-build/action.yml)
+          GRYPE_IMAGE=$(yq -r '.runs.steps[].env.GRYPE_IMAGE | select(. != null)' .github/actions/docker-build/action.yml)
+          SKOPEO_IMAGE=$(yq -r '.runs.steps[].env.SKOPEO_IMAGE | select(. != null)' .github/actions/docker-build/action.yml)
+          test "$GRYPE_IMAGE" = "$(yq -r '.inputs.grype-image.default' .github/actions/security-container-scan/action.yml)"
+          bash .github/actions/docker-build/tests/tool-trust.sh
+
+  actions:
+    name: Build and scan compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare an empty image fixture
+        run: |
+          mkdir -p "$RUNNER_TEMP/tool-fixture"
+          printf 'FROM scratch\nLABEL purpose=tool-security-smoke\n' > "$RUNNER_TEMP/tool-fixture/Dockerfile"
+          printf 'debug = false\n' > "$RUNNER_TEMP/tool-buildkitd.toml"
+      - name: Build and scan both platform manifests
+        uses: ./.github/actions/docker-build
+        with:
+          image: localbuild/tool-security
+          tags: smoke
+          context: ${{ runner.temp }}/tool-fixture
+          dockerfile: ${{ runner.temp }}/tool-fixture/Dockerfile
+          buildkit-config: ${{ runner.temp }}/tool-buildkitd.toml
+          platforms: linux/amd64,linux/arm64
+          push: 'false'
+          cache: 'false'
+          security-scan-enabled: 'true'
+      - name: Load the fixture for the standalone scanner
+        run: docker build --tag localbuild/tool-security:smoke "$RUNNER_TEMP/tool-fixture"
+      - name: Verify standalone SBOM and scan reports
+        uses: ./.github/actions/security-container-scan
+        with:
+          image: localbuild/tool-security:smoke
+          fail-build: 'true'
+          upload-sarif: 'false'
+      - uses: dcarbone/install-yq-action@64b1b9eb28920bb1a4c13c05321df284f9a8f940 # v1.1.1
+      - name: Check digest-preserving multi-platform copy
+        run: |
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --output "type=oci,dest=$RUNNER_TEMP/tool-oci,tar=false" "$RUNNER_TEMP/tool-fixture"
+          mkdir "$RUNNER_TEMP/tool-copy"
+          image=$(yq -r '.runs.steps[].env.SKOPEO_IMAGE | select(. != null)' .github/actions/docker-build/action.yml)
+          docker run --rm --user "$(id -u):$(id -g)" \
+            --cap-drop=ALL --security-opt=no-new-privileges --network=none \
+            --volume "$RUNNER_TEMP/tool-oci:/source:ro" --volume "$RUNNER_TEMP/tool-copy:/target" \
+            "$image" copy --all --preserve-digests oci:/source oci:/target
+          test "$(jq -r '.manifests[0].digest' "$RUNNER_TEMP/tool-oci/index.json")" = \
+            "$(jq -r '.manifests[0].digest' "$RUNNER_TEMP/tool-copy/index.json")"

@@ -3,6 +3,7 @@
 
 import base64
 import copy
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 import os
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -200,6 +202,21 @@ class PolicyTests(unittest.TestCase):
     def test_valid(self):
         self.assertEqual(p.policy(config()), config())
 
+    def test_previous_publishers_are_optional_bounded_and_immutable(self):
+        for previous in ([], ["e" * 40], [f"{i:040x}" for i in range(8)]):
+            candidate = {**config(), "previous_source_publisher_shas": previous}
+            self.assertEqual(p.policy(candidate), candidate)
+        for previous in (None, "e" * 40, {}, [None], ["main"], ["v1.2.3"],
+                         ["E" * 40], ["e" * 39], ["e" * 40 + "\n"],
+                         ["e" * 40, "e" * 40], [PUBLISHER_SHA],
+                         [f"{i:040x}" for i in range(9)]):
+            with self.subTest(previous=previous), self.assertRaises(p.PromotionError):
+                p.policy({**config(), "previous_source_publisher_shas": previous})
+        candidate = {**config(), "previous_source_publisher_shas": [PUBLISHER_SHA]}
+        del candidate["source_publisher_sha"]
+        with self.assertRaises(p.PromotionError):
+            p.policy(candidate)
+
     def test_charts_reject_namespace_changes_including_no_declared_version_paths(self):
         for paths in ([["image", "tag"]], []):
             candidate = config()
@@ -352,7 +369,8 @@ class ChartTests(unittest.TestCase):
         registry = MemoryRegistry(source)
         github = MemoryGitHub()
         with self.assertRaises(charts.InvalidChart):
-            p.promote(config(), evidence(source), github, registry, "23-1")
+            p.promote(config(), evidence(source), github, registry, "23-1",
+                      source_publisher_sha=PUBLISHER_SHA)
         self.assertEqual(registry.writes, [])
         self.assertIsNone(github.reservation)
 
@@ -539,7 +557,8 @@ class PromotionTests(unittest.TestCase):
         self.github = MemoryGitHub()
 
     def promote(self, attempt="23-1", path=None):
-        return p.promote(config(), self.evidence, self.github, self.registry, attempt, path)
+        return p.promote(config(), self.evidence, self.github, self.registry, attempt, path,
+                         source_publisher_sha=PUBLISHER_SHA)
 
     def test_complete_promotion_and_matching_rerun(self):
         first = self.promote()
@@ -584,7 +603,8 @@ class PromotionTests(unittest.TestCase):
         candidate = config()
         candidate["destination_ngc_path"] = "example/components"
         with self.assertRaisesRegex(p.PromotionError, "identical source and destination NGC paths"):
-            p.promote(candidate, self.evidence, None, None, "23-1")
+            p.promote(candidate, self.evidence, None, None, "23-1",
+                      source_publisher_sha=PUBLISHER_SHA)
 
     def test_unpromoted_chart_repository_fails_before_any_write(self):
         for disabled in (False, True):
@@ -604,7 +624,8 @@ class PromotionTests(unittest.TestCase):
                 registry = MemoryRegistry(source)
                 github = MemoryGitHub()
                 with self.assertRaisesRegex(charts.InvalidChart, "not a verified promotion destination"):
-                    p.promote(candidate, proof, github, registry, "23-1")
+                    p.promote(candidate, proof, github, registry, "23-1",
+                              source_publisher_sha=PUBLISHER_SHA)
                 self.assertEqual(registry.writes, [])
                 self.assertIsNone(github.reservation)
 
@@ -716,6 +737,118 @@ class CaptureTests(unittest.TestCase):
         with self.assertRaises(charts.InvalidChart):
             p.capture(config(), registry, context)
         self.assertEqual(registry.writes, [])
+
+
+class CaptureWaitTests(unittest.TestCase):
+    def setUp(self):
+        self.data = archive()
+        self.expected = evidence(self.data)
+        self.context = {key: self.expected[key] for key in (
+            "repository", "rc_version", "commit", "run_id", "run_attempt", "source_workflow",
+        )}
+        self.registry = MemoryRegistry(self.data)
+
+    def test_waits_for_images_then_charts_and_captures_complete_verified_inventory(self):
+        self.registry.source_image = None
+        self.registry.source_chart = None
+
+        def publish(_seconds):
+            if self.registry.source_image is None:
+                self.registry.source_image = IMAGE
+            else:
+                self.registry.source_chart = self.data
+
+        with patch.object(p.signal, "signal") as handler, \
+                patch.object(p.signal, "setitimer") as timer, \
+                patch.object(p, "time") as clock, \
+                redirect_stdout(io.StringIO()):
+            clock.sleep.side_effect = publish
+            result = p.capture_when_ready(config(), self.registry, self.context, 60)
+        self.assertEqual(result, self.expected)
+        self.assertEqual(clock.sleep.call_count, 2)
+        self.assertEqual(self.registry.writes, [])
+        self.assertEqual(timer.call_args_list[0].args, (p.signal.ITIMER_REAL, 60))
+        timer.assert_called_with(p.signal.ITIMER_REAL, 0)
+        handler.assert_called_with(p.signal.SIGALRM, handler.return_value)
+
+    def test_deadline_stops_wait_without_returning_partial_evidence(self):
+        self.registry.source_chart = None
+        with patch.object(p.signal, "signal") as handler, \
+                patch.object(p.signal, "setitimer") as timer, \
+                patch.object(p, "time") as clock, redirect_stdout(io.StringIO()):
+            clock.sleep.side_effect = lambda _: handler.call_args_list[0].args[1](None, None)
+            with self.assertRaisesRegex(p.PromotionError, "timed out"):
+                p.capture_when_ready(config(), self.registry, self.context, 30)
+        clock.sleep.assert_called_once_with(30)
+        self.assertEqual(self.registry.writes, [])
+        timer.assert_called_with(p.signal.ITIMER_REAL, 0)
+        handler.assert_called_with(p.signal.SIGALRM, handler.return_value)
+
+    def test_deadline_interrupts_a_blocked_registry_tool(self):
+        self.registry.image_digest = lambda *_args, **_kwargs: p.command([
+            sys.executable, "-c", "import time; time.sleep(60)",
+        ])
+        previous = p.signal.getsignal(p.signal.SIGALRM)
+        with self.assertRaisesRegex(p.PromotionError, "timed out"):
+            p.capture_when_ready(config(), self.registry, self.context, 1)
+        self.assertEqual(p.signal.getsignal(p.signal.SIGALRM), previous)
+        self.assertEqual(p.signal.getitimer(p.signal.ITIMER_REAL), (0.0, 0.0))
+        self.assertEqual(self.registry.writes, [])
+
+    def test_retry_sleep_mock_leaves_subprocess_polling_untouched(self):
+        original_sleep = time.sleep
+        with patch.object(p, "time") as clock:
+            self.assertIs(time.sleep, original_sleep)
+            # Closing the pipes before exit exercises the subprocess timeout wait.
+            result = subprocess.run([
+                sys.executable, "-c",
+                "import os, time; os.close(1); os.close(2); time.sleep(0.1)",
+            ], capture_output=True, timeout=5, check=True)
+            self.assertEqual(result.stdout, b"")
+            clock.sleep.assert_not_called()
+
+    def test_invalid_cli_wait_fails_before_authentication_or_manifest_write(self):
+        for operation, wait in (("capture", "-1"), ("capture", "10801"), ("promote", "30")):
+            with self.subTest(operation=operation, wait=wait), \
+                    patch.object(sys, "argv", ["promotion.py", operation, "--wait-seconds", wait]), \
+                    patch.object(p, "authenticate_registries") as authenticate, \
+                    patch.object(Path, "write_bytes") as write, \
+                    self.assertRaises(p.PromotionError):
+                p.main()
+            authenticate.assert_not_called()
+            write.assert_not_called()
+
+    def test_authentication_invalid_digest_and_wrong_provenance_are_not_retried(self):
+        for failure in ("read", "digest", "image-provenance", "chart-provenance"):
+            registry = MemoryRegistry(self.data)
+            if failure == "read":
+                registry.fail_read = True
+            elif failure == "digest":
+                registry.source_image = "not-a-digest"
+            elif failure == "image-provenance":
+                registry.verify_image = lambda *_: p.require(False, "wrong image provenance")
+            else:
+                registry.source_chart = archive({"service/Chart.yaml": b"name: wrong\n"})
+            with self.subTest(failure=failure), patch.object(p.signal, "signal"), \
+                    patch.object(p.signal, "setitimer") as timer, \
+                    patch.object(p, "time") as clock, \
+                    self.assertRaises((p.PromotionError, charts.InvalidChart)):
+                p.capture_when_ready(config(), registry, self.context, 60)
+            clock.sleep.assert_not_called()
+            timer.assert_called_with(p.signal.ITIMER_REAL, 0)
+            self.assertEqual(registry.writes, [])
+
+    def test_default_capture_does_not_wait_and_invalid_deadlines_fail_before_reads(self):
+        with patch.object(p.signal, "signal") as handler, \
+                patch.object(p, "time") as clock:
+            self.assertEqual(p.capture_when_ready(config(), self.registry, self.context), self.expected)
+            handler.assert_not_called()
+            clock.sleep.assert_not_called()
+        for timeout in (-1, 10801, True, 0.5, "30"):
+            registry = MemoryRegistry(self.data)
+            with self.subTest(timeout=timeout), self.assertRaises(p.PromotionError):
+                p.capture_when_ready(config(), registry, self.context, timeout)
+            self.assertEqual(registry.reads, [])
 
 
 class GateTests(unittest.TestCase):
@@ -839,8 +972,11 @@ class ToolTests(unittest.TestCase):
             alias = f"promotion-{role}"
 
             def response(args, **kwargs):
-                if args[:3] == ["helm", "repo", "update"]:
-                    self.assertEqual(args[3], alias)
+                if args[0] == "bash":
+                    self.assertEqual(args, [
+                        "bash", str(registry.tools.parent / "helm-shared/scripts/update-repo.sh"), alias,
+                    ])
+                    self.assertTrue(kwargs["clean_stderr"])
                     return b""
                 if args[:3] == ["helm", "search", "repo"]:
                     self.assertEqual(args[3], f"{alias}/service")
@@ -933,6 +1069,107 @@ class ToolTests(unittest.TestCase):
         result = subprocess.CompletedProcess([], 0, b"[]", b"cannot load index")
         with patch("subprocess.run", return_value=result), self.assertRaises(p.PromotionError):
             p.Registry("example/components-dev").chart("source", "service", RC, True)
+
+
+class RegistryChartProcessTests(unittest.TestCase):
+    HELM_STUB = r'''
+import json
+import os
+from pathlib import Path
+import sys
+
+state_path = Path(os.environ["PROMOTION_TEST_STATE"])
+state = json.loads(state_path.read_text())
+args = sys.argv[1:]
+state["calls"].append(args)
+state_path.write_text(json.dumps(state))
+alias = "promotion-" + state["role"]
+if args == ["version", "--template", "{{.Version}}"]:
+    reply = state["version"]
+elif args[:2] == ["repo", "update"]:
+    version = state["version"].get("stdout", "")
+    flags = ["--fail-on-repo-update-fail"] if version.startswith("v3.") else []
+    if args != ["repo", "update", alias, *flags]:
+        sys.exit("unsupported repository refresh arguments: " + " ".join(args))
+    reply = state["update"]
+elif args == ["search", "repo", alias + "/service", "--versions", "--devel", "-o", "json"]:
+    rows = [{"name": alias + "/service", "version": state["rc"]}] if state["present"] else []
+    reply = {"stdout": json.dumps(rows)}
+elif args[:4] == ["pull", alias + "/service", "--version", state["rc"]]:
+    assert args[4] == "--destination" and len(args) == 6
+    (Path(args[5]) / ("service-" + state["rc"] + ".tgz")).write_bytes(b"verified chart bytes")
+    reply = {}
+else:
+    sys.exit("unexpected Helm command: " + " ".join(args))
+sys.stdout.write(reply.get("stdout", ""))
+sys.stderr.write(reply.get("stderr", ""))
+sys.exit(reply.get("code", 0))
+'''
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="promotion-chart-test-")
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.state_file = self.directory / "state.json"
+        self.temp_root = self.directory / "tmp"
+        self.temp_root.mkdir()
+        executable = self.directory / "helm"
+        executable.write_text(f"#!{sys.executable}\n{self.HELM_STUB}")
+        executable.chmod(0o755)
+        self.env = {
+            "PATH": f"{self.directory}:{os.environ['PATH']}",
+            "PROMOTION_TEST_STATE": str(self.state_file),
+            "RUNNER_TEMP": str(self.temp_root), "TMPDIR": str(self.temp_root),
+        }
+        self.registry = p.Registry("example/components-dev", "example/components-dev")
+
+    def read_chart(self, role="source", **responses):
+        self.state_file.write_text(json.dumps({
+            "version": {"stdout": "v3.18.3"}, "update": {}, "present": True,
+            "role": role, "rc": RC, "calls": [], **responses,
+        }))
+        with patch.dict(os.environ, self.env):
+            return self.registry.chart(role, "service", RC, absent=True)
+
+    def calls(self):
+        self.assertEqual(list(self.temp_root.iterdir()), [])
+        return json.loads(self.state_file.read_text())["calls"]
+
+    def test_supported_helm_versions_refresh_the_selected_repository_before_pull(self):
+        for version, flags in (("v3.18.3", ["--fail-on-repo-update-fail"]), ("v4.0.0", [])):
+            for role in ("source", "destination"):
+                with self.subTest(version=version, role=role):
+                    self.assertEqual(self.read_chart(role, version={"stdout": version}), b"verified chart bytes")
+                    calls = self.calls()
+                    self.assertEqual(calls[:2], [
+                        ["version", "--template", "{{.Version}}"],
+                        ["repo", "update", f"promotion-{role}", *flags],
+                    ])
+                    self.assertEqual([call[0] for call in calls], ["version", "repo", "search", "pull"])
+
+    def test_helm4_confirms_absence_only_after_a_clean_refresh(self):
+        self.assertIsNone(self.read_chart(version={"stdout": "v4.0.0"}, present=False))
+        self.assertEqual([call[0] for call in self.calls()], ["version", "repo", "search"])
+
+    def test_refresh_and_version_failures_never_become_absence_or_leak_output(self):
+        secret_url = "https://user:promotion-secret@registry.invalid/index.yaml?token=private-query"
+        for name, responses, updates in (
+            ("Helm 4 failure", {"version": {"stdout": "v4.0.0"},
+                                "update": {"code": 1, "stdout": secret_url, "stderr": secret_url}}, 1),
+            ("Helm 4 warning", {"version": {"stdout": "v4.0.0"},
+                                "update": {"stdout": secret_url, "stderr": secret_url}}, 1),
+            ("unsupported major", {"version": {"stdout": "v5.0.0"}}, 0),
+            ("invalid version", {"version": {"stdout": secret_url}}, 0),
+            ("failed version probe", {"version": {"code": 1, "stdout": secret_url,
+                                                  "stderr": secret_url}}, 0),
+        ):
+            with self.subTest(name=name), redirect_stdout(io.StringIO()) as stdout, \
+                    redirect_stderr(io.StringIO()) as stderr:
+                with self.assertRaises(p.PromotionError) as error:
+                    self.read_chart(present=False, **responses)
+                self.assertEqual([call[0] for call in self.calls()], ["version"] + ["repo"] * updates)
+                for text in ("promotion-secret", "registry.invalid", "private-query"):
+                    self.assertNotIn(text, str(error.exception) + stdout.getvalue() + stderr.getvalue())
 
 
 if __name__ == "__main__":

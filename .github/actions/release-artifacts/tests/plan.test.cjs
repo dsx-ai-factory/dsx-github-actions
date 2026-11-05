@@ -29,6 +29,68 @@ test('plans a product image without chart dependencies', t => {
   assert.deepEqual(plan(inputs(), fixture(t)), { images: [image], charts: [] });
 });
 
+test('accepts both publishers without requiring a promotion manifest', t => {
+  const root = fixture(t);
+  for (const publisher of ['github', 'external']) {
+    for (const manifest of [undefined, 'false', 'true']) {
+      assert.deepEqual(plan(inputs({
+        RC_ARTIFACT_PUBLISHER: publisher, RC_PROMOTION_MANIFEST: manifest,
+      }), root), { images: publisher === 'github' ? [image] : [], charts: [] });
+    }
+  }
+});
+
+test('external accepts the minimal caller without any artifact settings', t => {
+  assert.deepEqual(plan({ RC_ARTIFACT_PUBLISHER: 'external' }, fixture(t)), { images: [], charts: [] });
+  assert.throws(() => plan({ RC_ARTIFACT_PUBLISHER: 'github' }, fixture(t)), /ngc-path/);
+});
+
+test('external ignores artifact declarations without registry tools or credentials', t => {
+  const root = fixture(t);
+  fs.writeFileSync(path.join(root, 'service/Dockerfile'), 'FROM nvcr.io/example/private:1\n');
+  fs.mkdirSync(path.join(root, 'chart'));
+  fs.writeFileSync(path.join(root, 'chart/Chart.yaml'), [
+    'apiVersion: v2', 'name: example-chart', 'version: 1.0.0', 'dependencies:',
+    '  - name: private-dependency', '    version: 1.0.0',
+    '    repository: https://helm.ngc.nvidia.com/example/private', '',
+  ].join('\n'));
+  const tools = path.join(root, 'bin');
+  fs.mkdirSync(tools);
+  const forbiddenLog = path.join(root, 'registry-access');
+  for (const tool of ['docker', 'helm', 'skopeo', 'curl', 'wget', 'ngc']) {
+    fs.writeFileSync(path.join(tools, tool), '#!/bin/sh\nprintf invoked >> "$FORBIDDEN_LOG"\nexit 99\n', { mode: 0o700 });
+  }
+  const output = path.join(root, 'output');
+  const result = spawnSync(process.execPath, [path.resolve(__dirname, '../plan.cjs')], {
+    cwd: root, encoding: 'utf8',
+    env: {
+      ...inputs({ RC_ARTIFACT_PUBLISHER: 'external', RC_PROMOTION_MANIFEST: 'false',
+        RC_CHARTS: JSON.stringify([{ name: 'example-chart', path: 'chart' }]) }),
+      PATH: tools, GITHUB_OUTPUT: output, FORBIDDEN_LOG: forbiddenLog,
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(fs.readFileSync(output, 'utf8'), /images=\[\]\ncharts=\[\]\nimage-count=0\nchart-count=0\n/);
+  assert.equal(fs.existsSync(forbiddenLog), false);
+});
+
+test('rejects invalid publication policy before emitting a plan', t => {
+  const root = fixture(t);
+  const output = path.join(root, 'output');
+  for (const overrides of [
+    ...['', 'GitHub', 'gitlab', 'external ', 'main', 'fake-secret-never-log'].map(value =>
+      ({ RC_ARTIFACT_PUBLISHER: value, RC_PROMOTION_MANIFEST: 'true' })),
+  ]) {
+    const result = spawnSync(process.execPath, [path.resolve(__dirname, '../plan.cjs')], {
+      cwd: root, encoding: 'utf8',
+      env: { ...process.env, ...inputs(overrides), GITHUB_OUTPUT: output },
+    });
+    assert.equal(result.status, 1);
+    assert.equal(fs.existsSync(output), false);
+    assert.doesNotMatch(result.stdout + result.stderr, /fake-secret-never-log/);
+  }
+});
+
 test('serializes literal Docker arguments and preserves the target without shell evaluation', t => {
   const configured = { ...image, target: 'widget-runtime', buildArgs: {
     BINARY: 'widget', FLAGS: '-X example=value -tags=a,b', EMPTY: '', LITERAL: '$(touch nope)',

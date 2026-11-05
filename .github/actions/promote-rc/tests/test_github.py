@@ -10,7 +10,9 @@ import unittest
 from unittest.mock import Mock, patch
 import zipfile
 
-from test_promotion import COMMIT, PUBLISHER_SHA, RC, archive, charts, config, evidence, p
+from test_promotion import (
+    COMMIT, PUBLISHER_SHA, RC, MemoryGitHub, MemoryRegistry, archive, charts, config, evidence, p,
+)
 
 
 class AuthenticationTests(unittest.TestCase):
@@ -136,6 +138,7 @@ class AuthenticationTests(unittest.TestCase):
             self.assertNotIn("RC_PROMOTION_GITHUB_TOKEN", os.environ)
             self.assertNotIn("RC_PROMOTION_PAT", os.environ)
             self.assertEqual(os.environ["GH_TOKEN"], "test-workflow-token")
+            return {}, PUBLISHER_SHA
 
         with patch.dict(os.environ, env, clear=True), \
                 patch("sys.argv", ["promotion.py", "promote"]), \
@@ -147,6 +150,7 @@ class AuthenticationTests(unittest.TestCase):
                 patch.object(p, "promote", return_value={}) as promote:
             p.main()
             self.assertEqual(promote.call_args.args[2].write_token, self.write_token)
+            self.assertEqual(promote.call_args.kwargs["source_publisher_sha"], PUBLISHER_SHA)
             check_environment()
 
 
@@ -160,7 +164,8 @@ class EvidenceTests(unittest.TestCase):
         self.github = p.GitHub("example/product")
         self.github.tag = Mock(return_value=COMMIT)
         self.github.release = Mock(return_value=None)
-        self.manifest = evidence(archive())
+        self.chart = archive()
+        self.manifest = evidence(self.chart)
         self.run = {
             "id": 12, "run_attempt": 1, "head_sha": COMMIT,
             "head_branch": "release/1.2.3", "event": "push", "status": "completed",
@@ -206,7 +211,52 @@ class EvidenceTests(unittest.TestCase):
         self.fail(path)
 
     def test_exact_successful_run_and_manifest(self):
-        self.assertEqual(self.github.evidence(config(), RC), self.manifest)
+        self.assertEqual(self.github.evidence(config(), RC), (self.manifest, PUBLISHER_SHA))
+
+    def test_explicit_previous_publisher_preserves_existing_rc_evidence(self):
+        candidate = p.policy({**config(), "source_publisher_sha": "e" * 40,
+                              "previous_source_publisher_shas": [PUBLISHER_SHA]})
+        self.assertEqual(self.github.evidence(candidate, RC), (self.manifest, PUBLISHER_SHA))
+        self.run["referenced_workflows"][0]["ref"] = PUBLISHER_SHA
+        self.assertEqual(self.github.evidence(candidate, RC), (self.manifest, PUBLISHER_SHA))
+
+    def test_old_rc_promotion_records_actual_publisher_without_changing_manifest_digest(self):
+        candidate = p.policy({**config(), "source_publisher_sha": "e" * 40,
+                              "previous_source_publisher_shas": [PUBLISHER_SHA]})
+        original = p.canonical(self.manifest)
+        downloaded = self.raw
+        proof, publisher_sha = self.github.evidence(candidate, RC)
+        github = MemoryGitHub()
+        registry = MemoryRegistry(self.chart)
+        result = p.promote(candidate, proof, github, registry, "23-1",
+                           source_publisher_sha=publisher_sha)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["intent"]["source_publisher_sha"], PUBLISHER_SHA)
+        self.assertEqual(github.reservation["source_publisher_sha"], PUBLISHER_SHA)
+        self.assertEqual(result["intent"]["rc_manifest_digest"], charts.digest(original))
+        self.assertEqual(p.canonical(proof), original)
+        self.assertEqual(self.raw, downloaded)
+        self.assertNotIn("source_publisher_sha", proof)
+
+    def test_unapproved_publisher_handoff_fails_before_registry_or_github_writes(self):
+        with self.assertRaisesRegex(p.PromotionError, "verified source publisher is not approved"):
+            p.promote(config(), self.manifest, None, None, "23-1",
+                      source_publisher_sha="e" * 40)
+
+    def test_previous_publisher_does_not_allow_mutable_unlisted_or_ambiguous_provenance(self):
+        candidate = p.policy({**config(), "previous_source_publisher_shas": ["e" * 40]})
+        valid = {"path": f"{p.SOURCE_PUBLISHER}@{'e' * 40}", "sha": "e" * 40}
+        for publishers in (
+            [{**valid, "path": f"{p.SOURCE_PUBLISHER}@main"}],
+            [{**valid, "ref": "refs/heads/main"}],
+            [{**valid, "sha": PUBLISHER_SHA}],
+            [{"path": f"{p.SOURCE_PUBLISHER}@{'f' * 40}", "sha": "f" * 40}],
+            [{**valid, "path": f"other/repo/.github/workflows/release-candidate-publish.yml@{'e' * 40}"}],
+            [valid, valid],
+        ):
+            with self.subTest(publishers=publishers), self.assertRaises(p.PromotionError):
+                self.run["referenced_workflows"] = publishers
+                self.github.evidence(candidate, RC)
 
     def test_caller_path_forms_in_selection_and_exact_attempt(self):
         caller = config()["source_workflow"]
@@ -221,7 +271,7 @@ class EvidenceTests(unittest.TestCase):
                 with self.subTest(listed_path=listed_path, attempt_path=attempt_path):
                     listed["path"] = listed_path
                     self.run["path"] = attempt_path
-                    self.assertEqual(self.github.evidence(config(), RC), self.manifest)
+                    self.assertEqual(self.github.evidence(config(), RC), (self.manifest, PUBLISHER_SHA))
 
     def test_wrong_caller_refs_rejected_in_selection_attempt_and_resume(self):
         caller = config()["source_workflow"]
@@ -258,7 +308,7 @@ class EvidenceTests(unittest.TestCase):
         self.github.pages.side_effect = lambda path, key: (
             [listed] if path.startswith("actions/workflows/") else [self.artifact]
         )
-        self.assertEqual(self.github.evidence(config(), RC), self.manifest)
+        self.assertEqual(self.github.evidence(config(), RC), (self.manifest, PUBLISHER_SHA))
         self.github.request.assert_any_call("repos/example/product/actions/runs/12/attempts/1")
         self.run.pop("referenced_workflows")
         with self.assertRaisesRegex(p.PromotionError, "shared publisher provenance"):
@@ -337,7 +387,7 @@ class EvidenceTests(unittest.TestCase):
             with self.subTest(suffix=suffix):
                 self.run["path"] = caller + suffix
                 self.github.pages.reset_mock()
-                self.assertEqual(self.github.evidence(config(), RC), self.manifest)
+                self.assertEqual(self.github.evidence(config(), RC), (self.manifest, PUBLISHER_SHA))
                 self.github.request.assert_any_call("repos/example/product/actions/runs/12/attempts/1")
                 self.assertEqual(self.github.pages.call_count, 1)
 

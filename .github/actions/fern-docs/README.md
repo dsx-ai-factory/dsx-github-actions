@@ -1,7 +1,7 @@
 # Fern documentation workflows
 
 The shared workflows validate docs, collect PR pages, publish previews, and
-publish stable releases. Callers own event triggers and path filters. Pin every
+publish releases. Callers own event triggers and path filters. Pin every
 caller to the same reviewed full commit SHA.
 
 | Workflow | Purpose | Required permissions |
@@ -9,7 +9,7 @@ caller to the same reviewed full commit SHA.
 | `fern-docs-ci.yml` | MDX, path, Fern configuration and link checks | `contents: read` |
 | `fern-docs-preview-build.yml` | Collect pages from a vetted `pull-request/N` push | `contents: read` |
 | `fern-docs-preview-comment.yml` | Publish a preview from the collector artifact | `contents: read`, `actions: read`, `pull-requests: write` |
-| `publish-fern-docs.yml` | Validate a stable release, optionally publish and register it | `contents: write`, `pull-requests: write` |
+| `publish-fern-docs.yml` | Validate a release, optionally publish and register it | `contents: write`, `pull-requests: write` |
 
 All four use `workflow_call` only. The composite action in this directory
 prepares and validates docs without publishing. Runners need Bash, Python 3.12+
@@ -93,7 +93,7 @@ The caller's `workflow_run` listener must exist on its default branch. A new
 feature branch alone cannot prove that handoff. Replace each old workflow in the
 same migration PR that enables its shared replacement; do not run two publishers.
 
-## Stable releases
+## Release publication
 
 `publish-fern-docs.yml` defaults to `publish: false`: it resolves the tag, prepares
 and checks the site, and makes no Fern publication or registry PR. Omit
@@ -110,8 +110,9 @@ Real publishing requires `publish: true`, `FERN_TOKEN`, and a release/tag event
 or manual dispatch on the caller's default branch. A manual dispatch from a
 feature branch is rejected. This gate does not protect against callers changing
 their own workflow code; retain normal branch and runner protections.
-The release tag must also be reachable from the caller's default branch, so a
-tag created only on a test branch cannot publish through the shared workflow.
+A stable release tag must also be reachable from the caller's default branch.
+An opted-in RC tag must be reachable from its matching release branch, as
+described below. A tag created only on a test branch cannot publish.
 
 For Identity, keep `register_versions: true`, `navigation_file: index.yml`, and
 its MDX paths. Registration uses the tag's navigation, retains the newest
@@ -122,9 +123,17 @@ overrides are not implemented.
 
 For Exchange, use `register_versions: false`, empty `navigation_file`, and
 `native_checks: false` to validate/publish the release tree without a registry PR.
-The shared publisher only accepts stable `vMAJOR.MINOR.PATCH` tags and skips
-prereleases. Exchange currently permits prerelease tags, so its caller migration
-must explicitly account for this policy difference.
+Set `publish_rc: true` to also accept `vMAJOR.MINOR.PATCH-rc.N` tags. The default
+remains stable releases only. RC publication requires `register_versions: false`
+and a tag reachable from `origin/release/MAJOR.MINOR.PATCH`. Protect those release
+branches and tags. Other prerelease formats are skipped. Manual publication
+still requires dispatch from the default branch.
+
+RC publication updates the same site configured in the release's `fern/docs.yml`.
+It does not create a separate preview site. Selecting an older tag replaces newer
+content on that site. The release tree must pin
+`fern/fern.config.json` to the selected CLI version, including on existing release
+branches. Backport the caller and config changes before cutting a new RC there.
 
 ## Verification
 

@@ -46,12 +46,8 @@ export HELM_REPOSITORY_CACHE="$verify_dir/repository"
 # failed refresh nor a warning from search establishes that a version is absent.
 # Raw diagnostics can contain credentialed URLs; report the failed operation.
 lookup_version() {
-  if ! helm repo update helm-repo-ngc --fail-on-repo-update-fail > /dev/null 2> "$verify_dir/update.errors"; then
+  if ! bash "$script_dir/update-repo.sh" helm-repo-ngc > /dev/null; then
     printf 'Unable to refresh the NGC chart index; existence is unknown.\n' >&2
-    return 1
-  fi
-  if [[ -s "$verify_dir/update.errors" ]]; then
-    printf 'NGC chart index refresh reported errors; existence is unknown.\n' >&2
     return 1
   fi
   if ! helm search repo "$chart_ref" --versions --version '>=0.0.0-0' --output json \

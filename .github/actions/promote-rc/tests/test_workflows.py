@@ -3,6 +3,7 @@
 
 from pathlib import Path
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,26 @@ import unittest
 from test_promotion import charts
 
 ROOT = Path(__file__).resolve().parents[3]
+
+
+def job_enabled(expression, context):
+    # Evaluate only the boolean conditions used by the RC wrapper, with fixture contexts.
+    def literal(match):
+        value = context
+        for key in match.group().split("."):
+            value = value[key]
+        return json.dumps(value)
+
+    expression = re.sub(r"\b(?:inputs|needs|github|steps)(?:\.[A-Za-z0-9_-]+)+", literal, expression)
+    result = subprocess.run([
+        "node", "-e",
+        "const vm = require('node:vm'); const expression = JSON.parse(process.argv[1]);"
+        "const enabled = vm.runInNewContext(expression, {always: () => true, "
+        "startsWith: (value, prefix) => value.startsWith(prefix)}, {timeout: 1000});"
+        "process.stdout.write(JSON.stringify(Boolean(enabled)));",
+        json.dumps(expression),
+    ], capture_output=True, text=True, check=True, timeout=10)
+    return json.loads(result.stdout)
 
 
 class WorkflowTests(unittest.TestCase):
@@ -274,6 +295,91 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(upload["with"]["if-no-files-found"], "error")
         self.assertEqual(upload["with"]["name"],
                          "rc-promotion-manifest-${{ needs.release.outputs.version }}-${{ github.run_attempt }}")
+
+    def test_external_publisher_keeps_source_release_without_registry_credentials(self):
+        workflow = charts.yaml_object((ROOT / "workflows/release-candidate-publish.yml").read_bytes())
+        self.assertEqual(workflow["on"]["workflow_call"]["inputs"]["artifact-publisher"]["default"],
+                         "github")
+        call = workflow["on"]["workflow_call"]
+        self.assertEqual({name for name, settings in call["inputs"].items() if settings.get("required")},
+                         {"runner"})
+        for name in ("environment", "ngc-path"):
+            self.assertEqual(call["inputs"][name]["default"], "")
+            self.assertFalse(call["inputs"][name].get("required", False))
+        self.assertFalse(call["secrets"]["NGC_DSX_COMPONENTS_PUSH_KEY"]["required"])
+        jobs = workflow["jobs"]
+        self.assertEqual(jobs["release"]["needs"], "plan")
+        self.assertEqual(jobs["release"]["uses"], "./.github/workflows/release-candidate.yml")
+        self.assertEqual(jobs["release"]["secrets"], {
+            "release-deploy-key": "${{ secrets.release-deploy-key }}",
+        })
+        for name in ("plan", "release"):
+            self.assertNotIn("environment", jobs[name])
+            self.assertNotIn("NGC_DSX_COMPONENTS_PUSH_KEY", json.dumps(jobs[name]))
+        plan = next(step for step in jobs["plan"]["steps"] if step.get("id") == "plan")
+        self.assertEqual(plan["env"]["RC_ARTIFACT_PUBLISHER"], "${{ inputs.artifact-publisher }}")
+        self.assertNotIn("RC_PROMOTION_MANIFEST", plan["env"])
+        for name in ("validate-images", "validate-charts", "images", "charts", "promotion-manifest"):
+            self.assertIn("inputs.artifact-publisher == 'github'", jobs[name]["if"])
+        job = jobs["promotion-manifest"]
+        self.assertEqual(job["timeout-minutes"], 20)
+        capture = next(step for step in job["steps"] if step.get("name") == "Capture every verified RC artifact")
+        self.assertNotIn("RC_CAPTURE_WAIT_SECONDS", capture["env"])
+        self.assertEqual(capture["run"], "python3 dsx-release-tools/.github/actions/promote-rc/promotion.py capture")
+        self.assertNotIn("continue-on-error", capture)
+        checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+        self.assertEqual(checkout["with"]["ref"], "${{ job.workflow_sha }}")
+
+    def test_source_release_has_no_artifact_secrets_or_registry_operations(self):
+        workflow = charts.yaml_object((ROOT / "workflows/release-candidate.yml").read_bytes())
+        self.assertEqual(set(workflow["on"]["workflow_call"]["secrets"]), {"release-deploy-key"})
+        self.assertNotRegex(json.dumps(workflow), r"NGC|nvcr\.io|helm\.ngc|docker/login|promote-rc")
+        self.assertNotIn("environment", workflow["jobs"]["release"])
+
+    def test_external_skips_all_artifact_jobs_even_with_legacy_options_enabled(self):
+        workflow = charts.yaml_object((ROOT / "workflows/release-candidate-publish.yml").read_bytes())
+        jobs = workflow["jobs"]
+        for publisher in ("github", "external"):
+            for manifest in (False, True):
+                for event, ref in (("push", "refs/heads/release/1.16.0"),
+                                   ("push", "refs/heads/pull-request/99"),
+                                   ("pull_request", "refs/pull/99/merge")):
+                    with self.subTest(publisher=publisher, manifest=manifest, event=event, ref=ref):
+                        releasing = ref.startswith("refs/heads/release/") and event == "push"
+                        context = {
+                            "inputs": {"artifact-publisher": publisher, "promotion-manifest": manifest,
+                                       "validate-artifacts": True},
+                            "github": {"event_name": event, "ref": ref},
+                            "needs": {
+                                "plan": {"outputs": {"image-count": "1", "chart-count": "1"}},
+                                "release": {"outputs": {"should-publish": "true" if releasing else "false"}},
+                                "images": {"result": "success"}, "charts": {"result": "success"},
+                            },
+                            "steps": {"plan": {"outputs": {"image-count": "1"}}},
+                        }
+                        for name in ("validate-images", "validate-charts", "images", "charts", "promotion-manifest"):
+                            expected = publisher == "github" and (
+                                not releasing if name.startswith("validate-") else releasing)
+                            if name == "promotion-manifest":
+                                expected = expected and manifest
+                            self.assertEqual(job_enabled(jobs[name]["if"], context), expected, name)
+                        self.assertEqual(job_enabled(jobs["release"]["if"], context), releasing)
+                        for step in jobs["plan"]["steps"]:
+                            if "if" in step and "inputs.artifact-publisher" in step["if"]:
+                                self.assertEqual(job_enabled(step["if"], context), publisher == "github")
+
+    def test_github_publisher_still_requires_an_environment_before_tag_creation(self):
+        workflow = charts.yaml_object((ROOT / "workflows/release-candidate-publish.yml").read_bytes())
+        step = workflow["jobs"]["plan"]["steps"][0]
+        self.assertEqual(step["name"], "Require the GitHub publishing environment")
+        self.assertEqual(step["if"], "inputs.artifact-publisher == 'github'")
+        for environment in ("", "release-candidate"):
+            result = subprocess.run(
+                ["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step["run"]],
+                env={"PUBLISHING_ENVIRONMENT": environment, "PATH": ""},
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 0 if environment else 1)
 
 
 if __name__ == "__main__":

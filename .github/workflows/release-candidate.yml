@@ -11,7 +11,7 @@ on:
         type: string
         default: ubuntu-latest
       default-branch:
-        description: Stable history branch, defaults to the repository default branch
+        description: Compatibility input; release history is selected from repository tags
         type: string
         default: ""
     secrets:
@@ -95,57 +95,35 @@ jobs:
         env:
           RC_REF_PROTECTED: ${{ github.ref_protected }}
         run: bash ../dsx-rc-actions/.github/actions/release-candidate/check-source.sh
-      - name: Configure the isolated RC publisher
-        env:
-          RC_DEFAULT_BRANCH: ${{ inputs.default-branch || github.event.repository.default_branch }}
-        run: node ../dsx-rc-actions/.github/actions/release-candidate/config.cjs
+      - name: Install the shared RC planner
+        run: npm ci --ignore-scripts --legacy-peer-deps --prefix ../dsx-rc-actions/.github/actions/release-candidate
+      - name: Set isolated preview paths
+        run: |
+          printf 'RC_PLAN_PATH=%s/dsx-rc-plan.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'RC_NOTES_PATH=%s/dsx-rc-notes.md\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Require working Deploy Key push authentication
         if: env.RC_GIT_SSH == 'true'
         timeout-minutes: 1
         env:
           GIT_TERMINAL_PROMPT: "0"
         run: bash ../dsx-rc-actions/.github/actions/release-candidate/check-git-auth.sh
-      - name: Detect an existing RC before semantic-release
-        id: existing
-        uses: ./dsx-rc-actions/.github/actions/resolve-release-candidate
-        with:
-          working-directory: release-source
+      - name: Preview the target release line
+        id: rc
+        run: node ../dsx-rc-actions/.github/actions/release-candidate/publish.mjs --dry-run
       - name: Verify existing RC source and channel metadata
-        if: steps.existing.outputs.should-publish == 'true'
+        if: steps.rc.outputs.reused-existing-tag == 'true'
         env:
-          RC_TAG: ${{ steps.existing.outputs.tag }}
-          RC_VERSION: ${{ steps.existing.outputs.version }}
+          RC_TAG: ${{ steps.rc.outputs.tag }}
+          RC_VERSION: ${{ steps.rc.outputs.version }}
         run: bash ../dsx-rc-actions/.github/actions/release-candidate/verify-existing-tag.sh
-      - name: Preview the release candidate
-        id: preview
-        if: steps.existing.outputs.should-publish != 'true'
-        uses: ./dsx-rc-actions/.github/actions/semantic-release
-        with:
-          working-directory: release-source
-          semantic-version: 25.0.9
-          extra-plugins: conventional-changelog-conventionalcommits@9.3.1
-          dry-run: "true"
       - name: Validate the candidate before publishing
-        if: steps.preview.outputs.new-release-published == 'true'
+        if: steps.rc.outputs.should-publish == 'true'
         env:
-          RC_VERSION: ${{ steps.preview.outputs.new-release-version }}
+          RC_VERSION: ${{ steps.rc.outputs.version }}
         run: node ../dsx-rc-actions/.github/actions/release-candidate/validate-version.cjs
       - name: Publish the release candidate
-        id: semantic
-        if: steps.existing.outputs.should-publish != 'true'
-        uses: ./dsx-rc-actions/.github/actions/semantic-release
-        with:
-          working-directory: release-source
-          semantic-version: 25.0.9
-          extra-plugins: conventional-changelog-conventionalcommits@9.3.1
-      - name: Resolve the new or existing RC
-        id: rc
-        uses: ./dsx-rc-actions/.github/actions/resolve-release-candidate
-        with:
-          working-directory: release-source
-          new-release-published: ${{ steps.semantic.outputs.new-release-published || 'false' }}
-          new-release-version: ${{ steps.semantic.outputs.new-release-version }}
-          new-release-git-tag: ${{ steps.semantic.outputs.new-release-git-tag }}
+        if: steps.rc.outputs.should-publish == 'true' && steps.rc.outputs.reused-existing-tag != 'true'
+        run: node ../dsx-rc-actions/.github/actions/release-candidate/publish.mjs --publish
       - name: Verify or recover the GitHub prerelease
         id: verify
         if: steps.rc.outputs.should-publish == 'true'
