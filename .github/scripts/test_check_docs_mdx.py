@@ -41,6 +41,67 @@ Double-backtick ``inline <br> { code``.
         )
         self.assertEqual(errors, [])
 
+    def test_accepts_indented_fences(self) -> None:
+        cases = [
+            ("- Parent\n  - Child\n\n", "    ", "    "),
+            ("1. Item\n\n", "    ", "    "),
+            ("- Parent\n  - Child\n    - Grandchild\n\n", "      ", "      "),
+            ("- Parent\n", "  - ", "    "),
+            ("", "1. ", "   "),
+            ("", "    ", "    "),
+            ("", "\t", "\t"),
+            ("", "    ", ""),
+        ]
+        for prefix, opening, indent in cases:
+            for marker in ["```", "~~~", "````"]:
+                with self.subTest(prefix=prefix, opening=opening, marker=marker):
+                    content = (
+                        prefix + opening + marker + "text\n"
+                        + indent + '{"ok": true} <br> <!-- example -->\n'
+                        + indent + marker + "\n"
+                    )
+                    self.assertEqual(self.check(content), [])
+                    errors = self.check(content + "\n" + indent + "Bare { brace\n")
+                    self.assertEqual(len(errors), 1)
+                    self.assertTrue(errors[0].endswith("bare { outside code fence"))
+
+    def test_indented_fence_closer_matches_marker_and_length(self) -> None:
+        for closer in ["```", "~~~~", "````not-a-close"]:
+            with self.subTest(closer=closer):
+                errors = self.check(
+                    "- Parent\n  - Child\n\n"
+                    "    ````text\n"
+                    f"    {closer}\n"
+                    "    { ignored <br> <!-- example -->\n"
+                    "    `````\n"
+                    "\nBare { brace\n"
+                )
+                self.assertEqual(len(errors), 1)
+                self.assertTrue(errors[0].endswith("bare { outside code fence"))
+
+    def test_unclosed_list_fence_ends_at_list_boundary(self) -> None:
+        cases = [
+            (
+                "- Parent\n  - Child\n\n    ```text\n    { ignored\n",
+                ["Bare { brace", "  - Sibling { brace", "  Parent { brace"],
+            ),
+            (
+                "1. Item\n\n    ```text\n    { ignored\n",
+                ["Bare { brace", "2. Sibling { brace", "  Outside { brace"],
+            ),
+            (
+                "- Parent\n  - Child\n    - Grandchild\n\n      ```text\n      { ignored\n",
+                ["Bare { brace", "    - Sibling { brace", "  Parent { brace"],
+            ),
+        ]
+        for prefix, following_lines in cases:
+            self.assertEqual(self.check(prefix), [])
+            for following in following_lines:
+                with self.subTest(prefix=prefix, following=following):
+                    errors = self.check(prefix + "\n" + following + "\n")
+                    self.assertEqual(len(errors), 1)
+                    self.assertTrue(errors[0].endswith("bare { outside code fence"))
+
     def test_reports_each_unsafe_construct(self) -> None:
         errors = self.check("<br>\nBare { brace\n<!-- comment -->\n")
         self.assertEqual(len(errors), 3)

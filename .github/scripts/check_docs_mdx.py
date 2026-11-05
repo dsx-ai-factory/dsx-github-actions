@@ -18,7 +18,9 @@ VOID_ELEMENT = re.compile(
     re.IGNORECASE,
 )
 BARE_OPEN_BRACE = re.compile(r"(?<!\\)\{")
-FENCE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})")
+# MDX permits indented fences because indented code blocks are disabled.
+FENCE = re.compile(r"^[ \t]*(?P<marker>`{3,}|~{3,})")
+LIST_ITEM = re.compile(r"^ *(?:[-+*]|[0-9]{1,9}[.)])(?P<space> +|$)")
 
 
 def markdown_files(paths: list[Path]) -> list[Path]:
@@ -37,6 +39,8 @@ def check_file(path: Path) -> list[str]:
     errors: list[str] = []
     in_fence = False
     fence_marker = ""
+    fence_list_indent = 0
+    list_indents: list[int] = []
     in_jsx_comment = False
 
     def strip_code_and_comments(line: str) -> str:
@@ -80,15 +84,22 @@ def check_file(path: Path) -> list[str]:
 
     for line_number, raw_line in enumerate(lines, 1):
         if in_fence:
-            close = re.fullmatch(
-                rf" {{0,3}}{re.escape(fence_marker[0])}"
-                rf"{{{len(fence_marker)},}}[ \t]*",
-                raw_line,
-            )
-            if close:
+            expanded = raw_line.expandtabs(4)
+            indent = len(expanded) - len(expanded.lstrip(" "))
+            # Leaving a list item also ends its unclosed fenced block.
+            if raw_line.strip() and indent < fence_list_indent:
                 in_fence = False
                 fence_marker = ""
-            continue
+            else:
+                close = re.fullmatch(
+                    rf"[ \t]*{re.escape(fence_marker[0])}"
+                    rf"{{{len(fence_marker)},}}[ \t]*",
+                    raw_line,
+                )
+                if close:
+                    in_fence = False
+                    fence_marker = ""
+                continue
 
         if in_jsx_comment:
             end = raw_line.find("*/}")
@@ -97,10 +108,26 @@ def check_file(path: Path) -> list[str]:
             raw_line = raw_line[end + 3 :]
             in_jsx_comment = False
 
-        fence = FENCE.match(raw_line)
+        fence_line = raw_line.expandtabs(4)
+        if fence_line.strip():
+            indent = len(fence_line) - len(fence_line.lstrip(" "))
+            while list_indents and indent < list_indents[-1]:
+                list_indents.pop()
+            item = LIST_ITEM.match(fence_line)
+            if item:
+                padding = len(item.group("space"))
+                # More than four spaces after a marker belong to its content.
+                content_indent = item.start("space") + (
+                    padding if 1 <= padding <= 4 else 1
+                )
+                list_indents.append(content_indent)
+                fence_line = fence_line[content_indent:]
+
+        fence = FENCE.match(fence_line)
         if fence:
             in_fence = True
             fence_marker = fence.group("marker")
+            fence_list_indent = list_indents[-1] if list_indents else 0
             continue
 
         # MDX does not treat indentation as a code block.
