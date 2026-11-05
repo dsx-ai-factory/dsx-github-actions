@@ -335,6 +335,17 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(result, {"deployment_id": 99, "pipeline_id": 502, "job_id": 1002, "approved_by": [77]})
         self.assertFalse(any(call.args[0].startswith("/groups/") for call in self.client.request.call_args_list))
 
+    def test_independent_approver_can_also_run_the_manual_job(self):
+        context = {**target_context(), "job_user_id": 77}
+        self.deployment["user"] = {"id": 77}
+        result = self.client.approvals(context, self.project, environment())
+        self.assertEqual(result["approved_by"], [77])
+
+    def test_missing_pipeline_triggerer_is_rejected(self):
+        with self.assertRaises(p.PromotionError):
+            self.client.approvals({**target_context(), "pipeline_user_id": None},
+                                  self.project, environment())
+
     def test_empty_groups_allow_rc_verification_but_fail_closed_before_promotion(self):
         candidate = document()
         candidate["gitlab"]["deploy_group_ids"] = []
@@ -391,7 +402,6 @@ class AdapterTests(unittest.TestCase):
         approval = copy.deepcopy(rule["deployment_approvals"][0])
         for approvals in ([], [approval, approval], [{**approval, "status": "rejected"}],
                           [{**approval, "user": {"id": 55, "state": "active"}}],
-                          [{**approval, "user": {"id": 66, "state": "active"}}],
                           [{**approval, "user": {"id": 77, "state": "blocked"}}]):
             rule["deployment_approvals"] = approvals
             with self.subTest(approvals=approvals), self.assertRaises(p.PromotionError):

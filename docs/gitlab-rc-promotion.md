@@ -20,8 +20,9 @@ newer, and mikefarah/yq v4. Install the pinned release-note dependencies with
 - GitLab default branch: run `gitlab.py promote --policy .gitlab/rc-promotion.json`
   in a manual `promote-rc` job for `web` or `api` pipelines with `RC_VERSION` set.
   Use the protected `stable-release` environment and a non-cancelling
-  `dsx-stable-release` resource group. Retain `promotion-result.json`, including
-  on failure. Do not run this job from the RC tag's code.
+  `dsx-stable-release` resource group. Set `timeout: 45m` so the job finishes
+  within the App token's one-hour lifetime. Retain `promotion-result.json`,
+  including on failure. Do not run this job from the RC tag's code.
 
 Move the existing [promotion policy](promote-rc.md#product-configuration) to
 `.gitlab/rc-promotion.json` and add:

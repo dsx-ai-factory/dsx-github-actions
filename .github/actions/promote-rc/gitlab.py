@@ -355,9 +355,9 @@ class GitLab:
                   deployment.get("status") == "running" and
                   deployment.get("pending_approval_count") == 0,
                   "deployment is not approved for this exact RC job")
-        starters = {context.get("pipeline_user_id"), context.get("job_user_id"),
-                    deployment.get("user", {}).get("id")}
-        p.require(all(positive(user) for user in starters), "missing deployment initiator evidence")
+        # An independent approver may also press Play on the approved job.
+        triggerer = context.get("pipeline_user_id")
+        p.require(positive(triggerer), "missing pipeline triggerer evidence")
         summary = groups(deployment.get("approval_summary", {}).get("rules"), rules)
         p.require(set(summary) == set(rules), "deployment approvals differ from live protection rules")
         approved = set()
@@ -371,7 +371,7 @@ class GitLab:
             for approval in approvals:
                 user = approval.get("user", {}).get("id")
                 p.require(approval.get("status") == "approved" and positive(user) and
-                          user not in starters and user not in approved and
+                          user != triggerer and user not in approved and
                           approval.get("user", {}).get("state") == "active",
                           "deployment approval is missing, rejected, duplicated or self-approved")
                 counted.add(user)
