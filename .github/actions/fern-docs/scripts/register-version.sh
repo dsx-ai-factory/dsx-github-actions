@@ -27,8 +27,9 @@ else
   yq -i "$EXPR" "$FERN_DOCS_PATH"
 fi
 
-# Sort all version entries by version descending.
-SORTED_SLUGS=$(yq '.products[0].versions[].slug' "$FERN_DOCS_PATH" | sort -rV)
+# Stable releases sort above prereleases with the same core version.
+SORTED_SLUGS=$(yq '.products[0].versions[].slug' "$FERN_DOCS_PATH" | \
+  python3 "$(dirname "${BASH_SOURCE[0]}")/sort-versions.py")
 yq -i '.products[0].versions = []' "$FERN_DOCS_PATH"
 for slug in $SORTED_SLUGS; do
   export slug

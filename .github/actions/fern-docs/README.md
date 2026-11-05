@@ -157,7 +157,10 @@ workflow. This works with either value of `register_versions` and does not requi
 For Identity, keep `register_versions: true`, `navigation_file: index.yml`, and
 its MDX paths. Registration uses the tag's navigation, retains the selected tag
 and the newest other versions up to `max_versions` (default 3), and opens
-`docs/fern-register-TAG` after publication.
+`docs/fern-register-TAG` after publication. Versions follow
+[SemVer precedence](https://semver.org/#spec-item-11), with stable releases above
+pre-releases of the same core version. Build metadata leaves registry order
+unchanged for versions with equal precedence.
 Merge the preceding registry PR before publishing another version. A tag without
 `index.yml` is rejected. Version and source ref remain the same; docs-only source
 overrides are not implemented.

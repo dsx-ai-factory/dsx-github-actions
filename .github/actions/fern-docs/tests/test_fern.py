@@ -385,6 +385,37 @@ class FernTest(unittest.TestCase):
         self.prepare(FROZEN_VERSIONS='true')
         self.assertEqual((self.root / 'fern/versions/v2.1.0-content/docs/overview.md').read_text(), '# Original overview\n')
 
+    def test_version_order_uses_semver_precedence_and_ignores_build_metadata(self):
+        tags = ['v1.2.3-rc.1', 'v1.2.3', 'v1.2.3+build.2', 'v1.2.3+build.10',
+                'v1.2.3-alpha.beta', 'v1.2.3-beta.11', 'v1.2.3-alpha.1',
+                'v1.2.3-beta', 'v1.2.3-alpha', 'v1.2.3-beta.2',
+                'v2.0.0', 'v1.10.0', 'v1.3.0-rc.1']
+        result = subprocess.run([sys.executable, str(SCRIPTS / 'sort-versions.py')],
+                                input='\n'.join(tags) + '\n', capture_output=True, text=True,
+                                cwd=self.root, env=self.env, check=True)
+        self.assertEqual(result.stdout.splitlines(), [
+            'v2.0.0', 'v1.10.0', 'v1.3.0-rc.1', 'v1.2.3',
+            'v1.2.3+build.2', 'v1.2.3+build.10', 'v1.2.3-rc.1',
+            'v1.2.3-beta.11', 'v1.2.3-beta.2', 'v1.2.3-beta',
+            'v1.2.3-alpha.beta', 'v1.2.3-alpha.1', 'v1.2.3-alpha',
+        ])
+
+    def test_registration_orders_stable_before_same_core_prereleases(self):
+        for tag in ['v1.2.4-rc.1', 'v1.2.4']:
+            self.git('tag', tag)
+            self.execute(['bash', str(SCRIPTS / 'register-version.sh')], TAG_VERSION=tag, MAX_VERSIONS='3')
+        versions = json.loads(self.execute(['yq', '-o=json', '.products[0].versions', 'fern/docs.yml']).stdout)
+        self.assertEqual([version['slug'] for version in versions], ['v1.2.4', 'v1.2.4-rc.1'])
+
+    def test_registration_retains_stable_at_pruning_boundary(self):
+        for tag in ['v1.2.4-rc.1', 'v1.2.4', 'v1.2.3']:
+            self.git('tag', tag)
+            self.execute(['bash', str(SCRIPTS / 'register-version.sh')], TAG_VERSION=tag, MAX_VERSIONS='2')
+        versions = json.loads(self.execute(['yq', '-o=json', '.products[0].versions', 'fern/docs.yml']).stdout)
+        self.assertEqual([version['slug'] for version in versions], ['v1.2.4', 'v1.2.3'])
+        self.assertTrue((self.root / 'fern/versions/v1.2.4.yml').is_file())
+        self.assertFalse((self.root / 'fern/versions/v1.2.4-rc.1.yml').exists())
+
     def test_publish_event_guard(self):
         self.git('tag', 'v1.2.3')
         self.git('update-ref', 'refs/remotes/origin/master', 'HEAD')
