@@ -18,7 +18,17 @@ VOID_ELEMENT = re.compile(
     re.IGNORECASE,
 )
 BARE_OPEN_BRACE = re.compile(r"(?<!\\)\{")
-FENCE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})")
+# MDX permits indented fences because indented code blocks are disabled.
+FENCE = re.compile(r"^[ \t]*(?P<marker>`{3,}|~{3,})")
+LIST_ITEM = re.compile(r"^ *(?:[-+*]|[0-9]{1,9}[.)])(?P<space> +|$)")
+BLOCKQUOTE = re.compile(r"^(?P<indent> *)> ?")
+
+
+def quote_contents(line: str) -> list[str]:
+    contents = [line.expandtabs(4)]
+    while quote := BLOCKQUOTE.match(contents[-1]):
+        contents.append(quote.group("indent") + contents[-1][quote.end():])
+    return contents
 
 
 def markdown_files(paths: list[Path]) -> list[Path]:
@@ -37,6 +47,8 @@ def check_file(path: Path) -> list[str]:
     errors: list[str] = []
     in_fence = False
     fence_marker = ""
+    fence_quote_depth = 0
+    list_indents: list[tuple[int, int]] = []  # Quote depth and content indent.
     in_jsx_comment = False
 
     def strip_code_and_comments(line: str) -> str:
@@ -80,15 +92,28 @@ def check_file(path: Path) -> list[str]:
 
     for line_number, raw_line in enumerate(lines, 1):
         if in_fence:
-            close = re.fullmatch(
-                rf" {{0,3}}{re.escape(fence_marker[0])}"
-                rf"{{{len(fence_marker)},}}[ \t]*",
-                raw_line,
+            contents = quote_contents(raw_line)
+            quoted = len(contents) > fence_quote_depth
+            fence_line = contents[fence_quote_depth] if quoted else contents[-1]
+            outside_list = quoted and any(
+                contents[depth].strip()
+                and len(contents[depth]) - len(contents[depth].lstrip(" ")) < indent
+                for depth, indent in list_indents
             )
-            if close:
+            # Leaving a blockquote or list item ends its unclosed fenced block.
+            if not quoted or outside_list:
                 in_fence = False
                 fence_marker = ""
-            continue
+            else:
+                close = re.fullmatch(
+                    rf"[ \t]*{re.escape(fence_marker[0])}"
+                    rf"{{{len(fence_marker)},}}[ \t]*",
+                    fence_line,
+                )
+                if close:
+                    in_fence = False
+                    fence_marker = ""
+                continue
 
         if in_jsx_comment:
             end = raw_line.find("*/}")
@@ -97,15 +122,41 @@ def check_file(path: Path) -> list[str]:
             raw_line = raw_line[end + 3 :]
             in_jsx_comment = False
 
-        fence = FENCE.match(raw_line)
+        contents = quote_contents(raw_line)
+        quote_depth = len(contents) - 1
+        fence_line = contents[-1]
+        indent = len(fence_line) - len(fence_line.lstrip(" "))
+        while list_indents and (
+            quote_depth < list_indents[-1][0]
+            or (fence_line.strip() and indent < list_indents[-1][1])
+        ):
+            list_indents.pop()
+        # Lists and blockquotes can alternate on the same line. Preserve list
+        # indentation so subsequent quotes and continuation lines share columns.
+        while fence_line.strip():
+            item = LIST_ITEM.match(fence_line)
+            if item:
+                padding = len(item.group("space"))
+                # Blank items use one space. Excess padding belongs to content.
+                if item.end() == len(fence_line) or not 1 <= padding <= 4:
+                    padding = 1
+                content_indent = item.start("space") + padding
+                list_indents.append((quote_depth, content_indent))
+                fence_line = " " * content_indent + fence_line[content_indent:]
+            elif quote := BLOCKQUOTE.match(fence_line):
+                quote_depth += 1
+                fence_line = quote.group("indent") + fence_line[quote.end():]
+            else:
+                break
+
+        fence = FENCE.match(fence_line)
         if fence:
             in_fence = True
             fence_marker = fence.group("marker")
+            fence_quote_depth = quote_depth
             continue
 
-        if raw_line.startswith(("    ", "\t")):
-            continue
-
+        # MDX does not treat indentation as a code block.
         line_without_code = strip_code_and_comments(raw_line)
 
         for match in VOID_ELEMENT.finditer(line_without_code):
