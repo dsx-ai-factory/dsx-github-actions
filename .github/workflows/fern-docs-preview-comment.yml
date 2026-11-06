@@ -210,6 +210,8 @@ jobs:
         if: inputs.post_comment
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           PR_NUMBER: ${{ steps.metadata.outputs.pr_number }}
           PREVIEW_URL: ${{ steps.generate-docs.outputs.preview_url }}
           PAGE_LINKS: ${{ steps.page-links.outputs.page_links }}
@@ -227,15 +229,29 @@ jobs:
 
           ${MARKER}"
 
-          # Match only the bot's own comment, because anyone can post the marker.
-          # Page through all comments so an older one is still found.
-          COMMENT_ID=$(gh api --paginate "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
-            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"${MARKER}\"))) | .id" | tr -d '\r' | head -1)
+          # Prefer the shared marker, then adopt the old bot comment on migration.
+          # Read every page and exclude user comments that contain either marker.
+          COMMENT_ID=$(gh api --paginate --slurp "repos/${REPO}/issues/${PR_NUMBER}/comments" | python3 -c '
+          import json, sys
+          comments = [comment for page in json.load(sys.stdin) for comment in page
+                      if (comment.get("user") or {}).get("login") == "github-actions[bot]"]
+          for marker in ("<!-- shared-fern-preview -->", "<!-- preview-docs -->"):
+              match = next((comment for comment in comments if marker in (comment.get("body") or "")), None)
+              if match:
+                  print(match["id"])
+                  break
+          ')
+
+          CURRENT_HEAD=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha')
+          if [[ -z "$CURRENT_HEAD" || "$CURRENT_HEAD" != "$RUN_HEAD_SHA" ]]; then
+            echo 'PR advanced while generating the preview; skipping the stale comment'
+            exit 0
+          fi
 
           if [ -n "$COMMENT_ID" ]; then
-            gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}" \
+            gh api "repos/${REPO}/issues/comments/${COMMENT_ID}" \
               -X PATCH -f body="$BODY"
           else
-            gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
               -f body="$BODY"
           fi
