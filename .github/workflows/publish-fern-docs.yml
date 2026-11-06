@@ -283,8 +283,8 @@ jobs:
           delete-branch: true
           sign-commits: true
           signoff: true
-          commit-message: "docs(NO-REF): register Fern docs ${{ steps.resolve.outputs.tag }}"
-          title: "docs(NO-REF): register Fern docs ${{ steps.resolve.outputs.tag }}"
+          commit-message: "docs(fern): register Fern docs ${{ steps.resolve.outputs.tag }}"
+          title: "docs(fern): register Fern docs ${{ steps.resolve.outputs.tag }}"
           body: |
             Registers `${{ steps.resolve.outputs.tag }}` in the Fern docs version registry, keeping up to ${{ env.MAX_VERSIONS }} versions including the selected tag.
 
