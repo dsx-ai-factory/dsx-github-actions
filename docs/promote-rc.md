@@ -1,6 +1,7 @@
 # Promote a release candidate
 
-For GitLab-owned NGC publication, use the [GitLab adapter](gitlab-rc-promotion.md).
+To tag in GitHub and publish in GitLab, use the
+[tag-only workflow](gitlab-rc-promotion.md#github-tags-gitlab-promotes).
 The GitHub workflow below is for products that publish artifacts from GitHub.
 
 `promote-rc.yml` publishes a stable release from one verified RC. It copies images

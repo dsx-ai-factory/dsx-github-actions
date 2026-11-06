@@ -107,8 +107,10 @@ For an external publisher such as GitLab, set `artifact-publisher: external` and
 `environment`, and `secrets: inherit`. Only map `release-deploy-key` if tag rules
 require it. Run product CI/E2E before this caller job. The external
 pipeline owns artifact publishing, verification, digest records, and stable
-promotion. Remove the product's GitHub promotion entry point when switching;
-the GitHub `promote-rc.yml` workflow requires a GitHub-captured manifest.
+artifact promotion. For GitHub-owned stable tags, use the
+[tag-only promotion workflow](gitlab-rc-promotion.md#github-tags-gitlab-promotes).
+The artifact-publishing `promote-rc.yml` workflow requires a GitHub-captured
+manifest and must not be used with this mode.
 Default `github` publishing and promotion are unchanged.
 
 With the `github` publisher and `validate-artifacts: true`, nonrelease events run the declared image and chart matrices after shared checks and preflight pass.

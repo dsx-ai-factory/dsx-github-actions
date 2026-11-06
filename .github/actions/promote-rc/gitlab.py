@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Verify protected GitLab RC artifacts; promote from protected default-branch code.
+"""Verify GitLab RC artifacts and promote through protected release pipelines.
 
 The policy is the existing promotion policy plus a ``gitlab`` object containing
 api_url, project_id, repository (GitHub owner/repo) and authorization settings.
@@ -9,6 +9,8 @@ All GitLab reads use read_api except /job, which authenticates
 the running job with CI_JOB_TOKEN. There are no GitLab mutations in this adapter.
 In group mode, empty lists permit verification but disable promotion. Promotion accepts
 RC_VERSION only on the latest protected default branch's web/api pipeline.
+The opt-in promote-tag operation consumes an annotated stable tag and changes
+only registry artifacts. It requires Maintainer access and retained RC evidence.
 Optional artifact_download_hosts lists exact HTTPS storage/CDN hosts. Redirected
 artifact requests never carry GitLab credentials; metadata never follows redirects.
 Authorization defaults to independent group approvals. The opt-in maintainer
@@ -19,6 +21,7 @@ without a second approval. Native admin bypasses do not bypass these checks.
 import argparse
 import base64
 from contextlib import ExitStack, contextmanager, nullcontext
+import fnmatch
 import ipaddress
 import json
 import os
@@ -68,11 +71,14 @@ def policy(document):
     gate = document.get("gitlab")
     p.require(isinstance(gate, dict) and set(gate) - {
         "artifact_download_hosts", "authorization", "deploy_group_ids", "approver_group_ids",
+        "stable_tag_pipeline",
     } == {
         "api_url", "project_id", "repository",
     }, "invalid GitLab policy fields")
     authorization = gate.get("authorization", "groups")
     p.require(authorization in ("groups", "maintainer"), "invalid GitLab authorization mode")
+    p.require(type(gate.get("stable_tag_pipeline", False)) is bool,
+              "stable_tag_pipeline must be a boolean")
     url = urllib.parse.urlsplit(gate["api_url"])
     p.require(url.scheme == "https" and url.hostname and not url.username and
               not url.password and not url.query and not url.fragment and
@@ -143,7 +149,7 @@ class GitLab:
         header = {"JOB-TOKEN": self.job_token} if job_token else {"PRIVATE-TOKEN": self.token}
         request = urllib.request.Request(self.gate["api_url"] + path, headers=header)
         artifact = binary and p.matches(
-            rf"{self.root}/jobs/[1-9][0-9]*/artifacts/rc-promotion-manifest[.]json", path)
+            rf"{self.root}/jobs/[1-9][0-9]*/artifacts/(?:rc-promotion-manifest|promotion-result)[.]json", path)
         opener = self.artifact_opener if artifact else self.opener
         try:
             with opener.open(request, timeout=60) as response:
@@ -181,25 +187,42 @@ class GitLab:
                   "GitLab job does not match the protected pipeline")
         return item
 
-    def context(self, operation, env):
+    def context(self, operation, env, github=None):
         p.require(env.get("CI_API_V4_URL") == self.gate["api_url"] and
                   integer(env.get("CI_PROJECT_ID")) == self.gate["project_id"] and
                   env.get("CI_COMMIT_REF_PROTECTED") == "true",
                   "job is not in the reviewed project on a protected ref")
         verifying = operation == "verify"
-        rc = env.get("CI_COMMIT_TAG", "")[1:] if verifying else env.get("RC_VERSION")
+        from_tag = operation == "promote-tag"
+        selection = None
+        if from_tag:
+            import tag_release
+            p.require(self.gate.get("stable_tag_pipeline") is True,
+                      "stable tag pipelines are not enabled in this RC")
+            stable = env.get("CI_COMMIT_TAG", "")[1:]
+            p.require(env.get("CI_COMMIT_TAG") == f"v{stable}" and
+                      p.matches(p.STABLE, stable), "a canonical stable tag is required")
+            selection = tag_release.read_tag(github, stable)
+            p.require(selection is not None, "GitHub stable tag is missing")
+        rc = selection["rc_version"] if from_tag else (
+            env.get("CI_COMMIT_TAG", "")[1:] if verifying else env.get("RC_VERSION"))
         p.version(rc)
         p.require(p.matches(p.SHA, env.get("CI_COMMIT_SHA")), "invalid pipeline commit")
         context = {"tag": f"v{rc}", "rc_version": rc, "commit": env["CI_COMMIT_SHA"],
-                   "ref": env.get("CI_COMMIT_TAG") if verifying else env.get("CI_COMMIT_BRANCH"),
-                   "tag_pipeline": verifying,
+                   "ref": env.get("CI_COMMIT_TAG") if verifying or from_tag else env.get("CI_COMMIT_BRANCH"),
+                   "tag_pipeline": verifying or from_tag,
                    "pipeline_id": integer(env.get("CI_PIPELINE_ID")),
                    "job_id": integer(env.get("CI_JOB_ID"))}
         project = self.request(self.root)
         p.require(project.get("id") == self.gate["project_id"] and
                   not project.get("forked_from_project") and project.get("archived") is False,
                   "forked or archived projects cannot publish releases")
-        if verifying:
+        if from_tag:
+            p.require(selection["commit"] == context["commit"],
+                      "stable tag does not select the pipeline commit")
+            context["tag_intent"] = selection
+            context["tag_object"] = self.stable_tag(context, github)
+        elif verifying:
             p.require(context["ref"] == context["tag"], "a canonical vX.Y.Z-rc.N tag is required")
         else:
             branch = project.get("default_branch")
@@ -212,22 +235,59 @@ class GitLab:
         pipeline = self.request(f"{self.root}/pipelines/{context['pipeline_id']}")
         p.require(pipeline.get("id") == context["pipeline_id"] and
                   pipeline.get("project_id") == self.gate["project_id"] and
-                  pipeline.get("source") in ({"push"} if verifying else {"web", "api"}) and
+                  pipeline.get("source") in ({"push"} if verifying or from_tag else {"web", "api"}) and
                   pipeline.get("ref") == context["ref"] and
                   pipeline.get("sha") == context["commit"] and pipeline.get("status") == "running",
                   "pipeline source, ref or commit does not match the allowed operation")
         remote_tag = self.request(f"{self.root}/repository/tags/{context['tag']}")
         rc_commit = remote_tag.get("commit", {}).get("id")
         p.require(remote_tag.get("name") == context["tag"] and remote_tag.get("protected") is True and
-                  p.matches(p.SHA, rc_commit) and (not verifying or rc_commit == context["commit"]),
+                  p.matches(p.SHA, rc_commit) and
+                  (not (verifying or from_tag) or rc_commit == context["commit"]),
                   "GitLab RC tag is unprotected or has changed")
         context["rc_commit"] = rc_commit
         current = self.job(self.request("/job", job_token=True), context,
-                           f"{operation}-rc", "running")
+                           "promote-release" if from_tag else f"{operation}-rc", "running")
         p.require(current["id"] == context["job_id"], "CI_JOB_ID differs from job-token identity")
         context["pipeline_user_id"] = pipeline.get("user", {}).get("id")
         context["job_user_id"] = current.get("user", {}).get("id")
         return context, project
+
+    def stable_tag(self, context, github):
+        import tag_release
+        intent = context["tag_intent"]
+        p.require(tag_release.read_tag(github, intent["stable_version"]) == intent,
+                  "stable tag selection changed")
+        ref = github.request(f"{github.root}/git/ref/tags/{context['ref']}")
+        object_sha = ref.get("object", {}).get("sha")
+        p.require(ref.get("object", {}).get("type") == "tag" and p.matches(p.SHA, object_sha),
+                  "stable tag must be annotated")
+        tag = self.request(f"{self.root}/repository/tags/{context['ref']}")
+        p.require(tag.get("protected") is True and tag.get("name") == context["ref"] and
+                  tag.get("target") == object_sha and
+                  tag.get("commit", {}).get("id") == intent["commit"] == context["commit"],
+                  "GitLab stable tag differs from the protected GitHub tag object")
+        p.require(context.get("tag_object", object_sha) == object_sha,
+                  "stable tag object changed during promotion")
+        rules = github.pages("rulesets?includes_parents=true")
+        protection = set()
+        for rule in rules:
+            if rule.get("target") != "tag" or rule.get("enforcement") != "active":
+                continue
+            p.require(positive(rule.get("id")), "invalid GitHub tag ruleset")
+            detail = github.request(f"{github.root}/rulesets/{rule['id']}")
+            condition = detail.get("conditions", {}).get("ref_name", {})
+            includes, excludes = condition.get("include", []), condition.get("exclude", [])
+            # Support the explicit stable-tag patterns used by release setup.
+            # Unknown patterns do not count as evidence of protection.
+            patterns = {"~ALL", "refs/tags/v*", "refs/tags/v*.*.*", f"refs/tags/{context['ref']}"}
+            if (set(includes) & patterns and not any(
+                    pattern == "~ALL" or fnmatch.fnmatchcase(f"refs/tags/{context['ref']}", pattern)
+                    for pattern in excludes)):
+                protection.update(item.get("type") for item in detail.get("rules", []))
+        p.require({"creation", "update", "deletion"} <= protection,
+                  "GitHub stable tags require active creation, update and deletion protection")
+        return object_sha
 
     def check_policy(self, path, document, context, github):
         p.require(not Path(path).is_absolute() and ".." not in Path(path).parts and
@@ -241,6 +301,18 @@ class GitLab:
         p.require(remote.get("encoding") == "base64" and
                   decode(base64.b64decode(remote["content"])) == document,
                   "GitHub and GitLab RC policies differ")
+        if "tag_intent" in context:
+            repo = github.request(github.root)
+            branch = repo.get("default_branch")
+            p.require(isinstance(branch, str) and branch, "GitHub default branch is missing")
+            current = github.request(f"{github.root}/branches/{urllib.parse.quote(branch, safe='')}")
+            p.require(current.get("protected") is True, "GitHub default branch is not protected")
+            trusted = current.get("commit", {}).get("sha")
+            p.require(p.matches(p.SHA, trusted), "invalid protected policy revision")
+            policy_file = github.request(f"{github.root}/contents/{path}?ref={trusted}")
+            p.require(policy_file.get("encoding") == "base64" and
+                      decode(base64.b64decode(policy_file["content"])) == document,
+                      "stable-tag policy differs from the current protected default branch")
         if not context["tag_pipeline"]:
             repo = github.request(github.root)
             p.require(repo.get("default_branch") == context["ref"], "GitHub default branch differs")
@@ -257,10 +329,12 @@ class GitLab:
                 "commit": context["commit"], "policy_digest": charts.digest(p.canonical(document))}
 
     def verified_artifact(self, context, path, github):
-        reservation = github.release(p.version(context["rc_version"]))
+        selection = context.get("tag_intent")
+        reservation = None if selection else github.release(p.version(context["rc_version"]))
         reserved = None
-        if reservation:
-            intent = github.intent(reservation)
+        intent = context.get("previous_intent")
+        if reservation or intent:
+            intent = github.intent(reservation) if reservation else intent
             reserved = intent.get("producer", {})
             p.require(intent.get("rc_version") == context["rc_version"] and
                       intent.get("commit") == context["rc_commit"] and
@@ -286,6 +360,8 @@ class GitLab:
                 if verified and verified[0].get("status") == "success":
                     found.append((pipeline["id"], verified[0]["id"]))
             p.require(found, "no successful RC push pipeline with a successful verify-rc job")
+            p.require(not selection or len(found) == 1,
+                      "multiple RC verification producers require a pinned promotion record")
             pipeline_id, job_id = max(found)
         p.require(positive(job_id), "invalid verification job ID")
         pipeline = self.request(f"{self.root}/pipelines/{pipeline_id}")
@@ -319,16 +395,53 @@ class GitLab:
         p.require(isinstance(proof, dict), "invalid verified manifest")
         p.manifest(proof, source_config, self.gate["repository"], context["rc_version"],
                    context["rc_commit"], {"id": proof.get("run_id"), "run_attempt": proof.get("run_attempt")})
+        if selection:
+            p.require(proof["run_id"] == selection["source_run_id"] and
+                      proof["run_attempt"] == selection["source_run_attempt"] and
+                      proof["source_workflow"] == selection["source_workflow"] and
+                      wrapper["source_publisher_sha"] == selection["source_publisher_sha"],
+                      "RC verification does not match the stable tag's exact source selection")
         return wrapper
+
+    def previous_promotion(self, context):
+        """Use retained exact-job evidence rather than reselecting a newer producer."""
+        records = []
+        pipelines = self.pages(f"pipelines?ref={context['ref']}&sha={context['commit']}&source=push")
+        for pipeline in pipelines:
+            p.require(positive(pipeline.get("id")), "invalid stable pipeline identity")
+            jobs = self.pages(f"pipelines/{pipeline['id']}/jobs?include_retried=true")
+            for item in jobs:
+                if (item.get("name") != "promote-release" or item.get("id") == context["job_id"] or
+                        not item.get("started_at")):
+                    continue
+                source = {**context, "pipeline_id": pipeline["id"]}
+                p.require(item.get("status") in {"success", "failed", "canceled"},
+                          "another stable promotion is still active")
+                self.job(item, source, "promote-release", item["status"])
+                # Authentication and source preflight can fail before a report
+                # exists. Retrying still requires one exact verified RC producer
+                # and the registry's immutable destination checks.
+                if (item.get("artifacts_file") or {}).get("size", 0) == 0:
+                    continue
+                record = decode(self.request(
+                    f"{self.root}/jobs/{item['id']}/artifacts/{RESULT}", binary=True))
+                p.require(record.get("tag_object") == context["tag_object"] and
+                          isinstance(record.get("intent"), dict), "previous promotion tag evidence differs")
+                records.append(record["intent"])
+        p.require(not records or all(record == records[0] for record in records),
+                  "previous stable promotion records disagree")
+        return records[0] if records else None
 
     def approvals(self, context, project, env):
         maintainer = self.gate.get("authorization", "groups") == "maintainer"
+        from_tag = "tag_intent" in context
+        p.require(not from_tag or maintainer, "automatic stable promotion requires Maintainer authorization")
         if not maintainer:
             p.require(self.gate["deploy_group_ids"] and self.gate["approver_group_ids"],
                       "stable promotion is not configured: explicit deployment and approval groups are required")
             p.require(project.get("allow_pipeline_trigger_approve_deployment") is False,
                       "group promotion requires no self-approval")
-        p.require(env.get("CI_JOB_MANUAL") == "true" and
+        p.require((from_tag or env.get("CI_JOB_MANUAL") == "true") and
                   env.get("CI_ENVIRONMENT_NAME") == p.ENVIRONMENT,
                   "promotion requires a manual stable-release deployment")
         protected = self.request(f"{self.root}/protected_environments/{p.ENVIRONMENT}")
@@ -362,7 +475,7 @@ class GitLab:
                 p.require(member.get("id") == user and member.get("state") == "active" and
                           member.get("membership_state", "active") == "active" and
                           type(member.get("access_level")) is int and member["access_level"] >= 40,
-                          "pipeline and manual-job users must be active project Maintainers or Owners")
+                          "pipeline and job users must be active project Maintainers or Owners")
         else:
             groups(protected.get("deploy_access_levels"), self.gate["deploy_group_ids"])
             rules = groups(protected.get("approval_rules"), self.gate["approver_group_ids"])
@@ -466,6 +579,52 @@ def promote(config, gitlab, context, project, env, github, registry, report_path
                 report_path.write_bytes(p.canonical(report))
 
 
+class ArtifactOnlyLifecycle:
+    """Retain the artifact journal in GitLab without changing GitHub state."""
+
+    def __init__(self, gitlab, context, github):
+        self.gitlab, self.context, self.github = gitlab, context, github
+
+    def reserve(self, stable, commit, intent):
+        selection = self.context["tag_intent"]
+        p.require(stable == selection["stable_version"] and commit == selection["commit"],
+                  "artifact promotion differs from the stable tag selection")
+        previous = self.context.get("previous_intent")
+        p.require(previous is None or previous == intent,
+                  "stable artifact evidence changed since the previous attempt")
+        self.gitlab.stable_tag(self.context, self.github)
+        return None
+
+    def upload(self, release, name, report):
+        # p.promote saves each checkpoint to the retained GitLab job artifact.
+        pass
+
+    def finish(self, release, commit):
+        self.gitlab.stable_tag(self.context, self.github)
+
+
+def promote_tag(config, gitlab, context, project, env, github, registry, report_path,
+                policy_path=POLICY_PATH, authenticate=None):
+    approval = gitlab.approvals(context, project, env)
+    context["previous_intent"] = gitlab.previous_promotion(context)
+    wrapper = evidence(config, gitlab, context, github, policy_path)
+    if authenticate:
+        authenticate()
+    try:
+        result = p.promote(
+            config, wrapper["manifest"], github, registry,
+            f"gitlab-{gitlab.gate['project_id']}-{context['job_id']}", report_path,
+            source_publisher_sha=wrapper["source_publisher_sha"], producer=wrapper["producer"],
+            release_lifecycle=ArtifactOnlyLifecycle(gitlab, context, github))
+        return result
+    finally:
+        if report_path.exists():
+            report = decode(report_path.read_bytes())
+            report["gitlab_approval"] = approval
+            report["tag_object"] = context["tag_object"]
+            report_path.write_bytes(p.canonical(report))
+
+
 @contextmanager
 def read_token_environment(token):
     previous = os.environ.get("GH_TOKEN")
@@ -498,14 +657,22 @@ def app_credentials(prefix):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("verify", "promote"))
+    parser.add_argument("operation", choices=("verify", "promote", "promote-tag"))
     parser.add_argument("--policy", default=POLICY_PATH)
     args = parser.parse_args()
     document = decode(Path(args.policy).read_bytes())
     config, gate = policy(document)
     # The privileged tokens must not be inherited by registry or parser commands.
     write_token = os.environ.pop("RC_PROMOTION_GITHUB_TOKEN", "")
-    app = app_credentials("RC_PROMOTION")
+    if args.operation == "promote-tag":
+        # Stable tags are already published. Do not request or inherit a writer.
+        write_token = ""
+        for key in ("APP_ID", "APP_INSTALLATION_ID", "APP_PRIVATE_KEY", "APP_PRIVATE_KEY_FILE",
+                    "APP_PRIVATE_KEY_B64"):
+            os.environ.pop(f"RC_PROMOTION_{key}", None)
+        app = None
+    else:
+        app = app_credentials("RC_PROMOTION")
     read_app = app_credentials("RC_VERIFICATION")
     p.require(not (app and write_token), "configure only one GitHub promotion credential")
     # Legacy single-App callers can still request a read-scoped token.
@@ -513,12 +680,12 @@ def main():
     gitlab = GitLab(gate, os.environ.pop("GITLAB_RELEASE_READ_TOKEN", ""),
                     os.environ.pop("CI_JOB_TOKEN", ""))
     github = p.GitHub(gate["repository"])
-    context, project = gitlab.context(args.operation, os.environ)
     with ExitStack() as credentials, tempfile.TemporaryDirectory(prefix="gitlab-promotion-") as auth:
         if read_app:
             token = credentials.enter_context(installation_token(github.repository, mode="read", **read_app))
             credentials.enter_context(read_token_environment(token))
         p.require(os.environ.get("GH_TOKEN"), "an approved GitHub read credential is required")
+        context, project = gitlab.context(args.operation, os.environ, github)
         gitlab.check_policy(args.policy, document, context, github)
         os.environ["PROMOTION_AUTH_ROOT"] = auth
         for key, name in (("HELM_CONFIG_HOME", "config"), ("HELM_CACHE_HOME", "cache"),
@@ -531,6 +698,11 @@ def main():
                             p.Registry(config["source_ngc_path"]),
                             authenticate=lambda: p.authenticate_registries(config, capture_only=True))
             Path(MANIFEST).write_bytes(p.canonical(result))
+        elif args.operation == "promote-tag":
+            promote_tag(config, gitlab, context, project, os.environ, github,
+                        p.Registry(config["source_ngc_path"], config["destination_ngc_path"]),
+                        Path(RESULT), args.policy,
+                        authenticate=lambda: p.authenticate_registries(config))
         else:
             promote(config, gitlab, context, project, os.environ, github,
                     p.Registry(config["source_ngc_path"], config["destination_ngc_path"]),

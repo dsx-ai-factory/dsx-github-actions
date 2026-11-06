@@ -7,6 +7,10 @@ paths:
     ignore:
       # Same pinned shared-workflow identity properties as the RC publisher.
       - '^property "workflow_(sha|repository)" is not defined in object type \{check_run_id: number; container:'
+  .github/workflows/promote-rc-tag.yml:
+    ignore:
+      # Same pinned shared-workflow identity properties as promote-rc.yml.
+      - '^property "workflow_(sha|repository)" is not defined in object type \{check_run_id: number; container:'
   .github/workflows/attest-image.yml:
     ignore:
       # Same GitHub.com workflow identity properties used by the RC workflows.
