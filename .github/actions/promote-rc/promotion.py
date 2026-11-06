@@ -184,7 +184,7 @@ class GitHub:
         env = self.write_environment() if draft_read else None
         if method != "GET":
             require((method == "POST" and path in {
-                f"{self.root}/releases", f"{self.root}/git/refs",
+                f"{self.root}/releases", f"{self.root}/git/refs", f"{self.root}/git/tags",
             }) or (method == "PATCH" and re.fullmatch(
                 re.escape(self.root) + r"/releases/[0-9]+", path)),
                 "unsupported GitHub promotion write")
@@ -575,8 +575,12 @@ class Registry:
 
 
 def promote(config, evidence, github, registry, attempt, report_path=None, *, source_publisher_sha,
-            producer=None):
+            producer=None, release_lifecycle=None, tag_object=None):
+    # GitLab tag pipelines supply a local lifecycle. Registry checks and copies
+    # stay identical, but only the default lifecycle writes GitHub releases.
+    lifecycle = release_lifecycle if release_lifecycle is not None else github
     policy(config)
+    require(tag_object is None or matches(SHA, tag_object), "invalid promotion tag object")
     require(source_publisher_sha in [config["source_publisher_sha"],
                                     *config.get("previous_source_publisher_shas", [])],
             "verified source publisher is not approved")
@@ -619,8 +623,10 @@ def promote(config, evidence, github, registry, attempt, report_path=None, *, so
     }
     if producer is not None:
         intent["producer"] = producer
-    release = github.reserve(stable, commit, intent)
+    release = lifecycle.reserve(stable, commit, intent)
     report = {"schema": 1, "intent": intent, "status": "partial", "artifacts": []}
+    if tag_object is not None:
+        report["tag_object"] = tag_object
 
     def save():
         if report_path is not None:
@@ -650,16 +656,16 @@ def promote(config, evidence, github, registry, attempt, report_path=None, *, so
         # Preserve the verified report before exposing the stable tag and release.
         report["status"] = "artifacts_verified"
         save()
-        github.upload(release, f"promotion-attempt-{attempt}.json", report)
+        lifecycle.upload(release, f"promotion-attempt-{attempt}.json", report)
         require(github.tag(f"v{rc}") == commit, "RC tag changed during promotion")
-        github.finish(release, commit)
+        lifecycle.finish(release, commit)
         report["status"] = "completed"
         save()
         return report
     except Exception:
         save()
         if report["status"] == "partial":
-            github.upload(release, f"promotion-attempt-{attempt}.json", report)
+            lifecycle.upload(release, f"promotion-attempt-{attempt}.json", report)
         raise
 
 

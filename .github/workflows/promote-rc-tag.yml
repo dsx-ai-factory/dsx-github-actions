@@ -1,0 +1,105 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Tag stable release
+
+on:
+  workflow_call:
+    inputs:
+      rc_version:
+        description: Exact QA-approved RC version without the v prefix
+        required: true
+        type: string
+      policy_path:
+        description: Reviewed promotion policy on the protected default branch
+        default: .github/rc-promotion.json
+        type: string
+    secrets:
+      RC_PROMOTION_APP_PRIVATE_KEY:
+        description: Repository release App private key from stable-release
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dsx-stable-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      release-mode: ${{ steps.admission.outputs.release-mode }}
+    steps:
+      - name: Require the protected default branch
+        id: admission
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PROTECTED: ${{ github.ref_protected }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          RELEASE_MODE: ${{ vars.DSX_RELEASE_MODE }}
+        run: |
+          set -euo pipefail
+          [[ "$EVENT" == workflow_dispatch ]] || exit 1
+          [[ "$REF" == "refs/heads/$DEFAULT_BRANCH" && "$PROTECTED" == true ]] || exit 1
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$RELEASE_MODE" == rc-promotion ]] || exit 1
+          echo "release-mode=rc-promotion" >> "$GITHUB_OUTPUT"
+
+  tag:
+    needs: admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: stable-release
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+    steps:
+      - name: Check release App configuration
+        env:
+          APP_ID: ${{ vars.RC_PROMOTION_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.RC_PROMOTION_APP_PRIVATE_KEY }}
+        run: |
+          set +x
+          set -euo pipefail
+          [[ "$APP_ID" =~ ^[1-9][0-9]*$ && -n "$APP_PRIVATE_KEY" ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: dsx-promotion-tools
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.22.1"
+          package-manager-cache: false
+      - name: Install release notes dependencies
+        run: npm ci --ignore-scripts --legacy-peer-deps --prefix dsx-promotion-tools/.github/actions/promote-rc
+      - uses: dcarbone/install-yq-action@4075b4dca348d74bd83f2bf82d30f25d7c54539b # v1.3.1
+      - name: Create the repository-scoped release token
+        id: release-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RC_PROMOTION_APP_ID }}
+          private-key: ${{ secrets.RC_PROMOTION_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-workflows: write
+          skip-token-revoke: false
+      - name: Create the stable tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC_PROMOTION_GITHUB_TOKEN: ${{ steps.release-token.outputs.token }}
+          RC_VERSION: ${{ inputs.rc_version }}
+          POLICY_PATH: ${{ inputs.policy_path }}
+          DSX_RELEASE_MODE: ${{ needs.admission.outputs.release-mode }}
+        run: |
+          set +x
+          set -euo pipefail
+          python3 dsx-promotion-tools/.github/actions/promote-rc/tag_release.py --policy "$POLICY_PATH"

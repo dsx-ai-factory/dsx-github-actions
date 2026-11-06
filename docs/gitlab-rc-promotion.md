@@ -4,7 +4,79 @@ Use this adapter when GitLab owns NGC publishing. GitHub runs product CI and
 creates the RC tag and prerelease, then finishes. It needs no NGC credentials.
 GitLab publishes and verifies the RC, then promotes it after QA approval.
 
+## GitHub tags, GitLab promotes
+
+1. QA validates an RC with a successful GitLab `verify-rc` job.
+2. A maintainer runs GitHub's Promote RC workflow from the protected default
+   branch and selects that exact RC. The `stable-release` reviewers approve it.
+3. GitHub creates an annotated `vX.Y.Z` tag at the RC commit and publishes the
+   release notes. It makes no registry requests and needs no NGC credentials.
+4. The mirrored stable tag starts GitLab's `promote-release` job. GitLab checks
+   the selected RC and its verification record, preserves image digests, updates
+   chart release metadata, and verifies the resulting artifacts.
+
+The stable tag exists before artifact promotion finishes. Wait for GitLab's
+`promote-release` job to pass before consuming the stable artifacts. A failed
+job can be retried for the same tag. Never move that tag to a different RC.
+
+The product's manual GitHub caller uses `promote-rc-tag.yml` at a reviewed commit:
+
+```yaml
+jobs:
+  promote:
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+    uses: dsx-ai-factory/dsx-github-actions/.github/workflows/promote-rc-tag.yml@<reviewed-full-commit-sha>
+    with:
+      rc_version: ${{ inputs.rc_version }}
+      policy_path: .gitlab/rc-promotion.json
+    secrets:
+      RC_PROMOTION_APP_PRIVATE_KEY: ${{ secrets.RC_PROMOTION_APP_PRIVATE_KEY }}
+```
+
+Keep the existing [GitHub approval controls](promote-rc.md#authorization-and-cutover)
+and repository-scoped release App. Pass only the App secret to this workflow,
+not NGC keys. Both platforms use the same `.gitlab/rc-promotion.json` policy.
+Set `gitlab.stable_tag_pipeline` to `true` when adding the stable-tag job.
+GitHub checks this opt-in at the selected RC commit before creating a stable tag.
+The complete policy must match the protected default branch. Use a new RC if
+its GitHub CI workflow was rerun, so the selected attempt cannot differ from
+GitLab's verification record.
+
+GitLab runs `gitlab.py promote-tag --policy .gitlab/rc-promotion.json` in an
+automatic `promote-release` job for protected stable-tag push pipelines only.
+Use the `stable-release` environment, the `dsx-stable-release` resource group,
+and retain `promotion-result.json` on success and failure. Keep the existing RC
+`verify-rc` job. Do not run image builds or the old manual `promote-rc` job for
+stable tags.
+
+Before switching:
+
+- Protect stable tags in both repositories. In GitHub, restrict creation,
+  updates, and deletion for `refs/tags/v*`, exclude `refs/tags/v*-rc.*`, and allow
+  the release App to create stable tags. Keep RC tag permissions unchanged.
+  The GitLab mirror account must be allowed to create protected stable tags and
+  deploy to `stable-release` as a Maintainer or Owner.
+- Keep GitLab's read credentials for GitHub and RC verification records. Artifact
+  promotion needs NGC credentials, but no GitHub write credential.
+- Merge the GitLab tag pipeline configuration into the active release branch,
+  then publish and validate a new RC. Tag pipelines use the selected RC commit's
+  configuration, so an older RC cannot pick up this change from the default branch.
+- Remove the competing manual GitLab tag-creation job when enabling the GitHub
+  caller. The existing GitLab-owned tagging mode below remains available for
+  products that have not switched.
+
+The annotated stable tag records the exact source RC, commit, and GitHub CI
+attempt. It is selection metadata, not proof that artifacts were published.
+GitLab obtains artifact digests from its successful RC verification job and
+rejects missing evidence, changed tags, or conflicting stable artifacts.
+
 ## Pipeline setup
+
+The following setup keeps both tagging and artifact promotion in GitLab.
+Use it only when that is the product's chosen release model.
 
 Pin this repository to a reviewed full commit SHA. Run
 `.github/actions/promote-rc/gitlab.py` with Python 3 and these tools available:

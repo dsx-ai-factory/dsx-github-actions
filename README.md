@@ -29,6 +29,7 @@ A collection of reusable GitHub Actions for standardizing CI/CD workflows across
 | [Fern docs](.github/actions/fern-docs/README.md) | Validate docs, build previews, and publish release versions | Shared Fern CI/CD across repos |
 | [promote-image](.github/workflows/promote-image.yml) | Re-tag and re-publish multi-arch images via `skopeo` | Promote OCI images across registries |
 | [promote-rc](.github/workflows/promote-rc.yml) | Opt-in environment-gated promotion of verified RC artifacts | Stable tags without rebuilding QA-tested images |
+| [promote-rc-tag](.github/workflows/promote-rc-tag.yml) | Approve and tag an RC in GitHub | Artifact promotion runs in GitLab |
 | [docker-build](.github/workflows/docker-build.yml) | Reusable workflow wrapper for Docker build/push | Share Docker build logic across repos |
 | [attest-image](.github/workflows/attest-image.yml) | Sign and verify platform SBOMs and build provenance | Promote verified image digests to release tags |
 | [release-candidate-publish](.github/workflows/release-candidate-publish.yml) | Source RCs plus immutable NGC images and Helm charts | Manifest-driven RC publishing through one caller job |
@@ -85,7 +86,8 @@ artifacts. Neither RC entry point updates stable or moving major tags. The
 manifest, artifact verification, reruns, and the SBOM handoff. Historical
 release branches retain their checked-in workflows until explicitly migrated.
 For opt-in stable promotion, see the [Promote RC setup guide](docs/promote-rc.md).
-For GitLab-owned publishing and promotion, use the [GitLab adapter](docs/gitlab-rc-promotion.md).
+To keep tagging in GitHub and artifact publishing in GitLab, use the
+[tag-only workflow and GitLab adapter](docs/gitlab-rc-promotion.md#github-tags-gitlab-promotes).
 
 Shared chart jobs check a freshly fetched, authenticated NGC index before
 preparation. Verified existing charts skip dependency resolution and packaging.
