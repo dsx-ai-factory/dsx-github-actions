@@ -207,7 +207,13 @@ jobs:
         if: ${{ !inputs.register_versions && steps.resolve.outputs.publish == 'true' }}
         env:
           TAG_VERSION: ${{ steps.resolve.outputs.tag }}
-        run: git checkout --detach "refs/tags/${TAG_VERSION}"
+          FERN_DOCS_PATH: ${{ inputs.fern_docs_path }}
+        run: |
+          if [[ -n "$FERN_DOCS_PATH" && ! -f "$FERN_DOCS_PATH" ]]; then
+            echo '::error::fern_docs_path must exist on the default branch'
+            exit 1
+          fi
+          git checkout --detach "refs/tags/${TAG_VERSION}"
 
       - name: Prepare Fern configuration and registry paths
         if: steps.resolve.outputs.publish == 'true'
@@ -216,7 +222,11 @@ jobs:
           FERN_DOCS_PATH: ${{ inputs.fern_docs_path }}
           FERN_ORGANIZATION: ${{ inputs.fern_organization }}
           FERN_CLI_VERSION: ${{ inputs.fern_cli_version }}
-        run: python3 ../_fern-shared/.github/actions/fern-docs/scripts/prepare.py configure .
+          REGISTER_VERSIONS: ${{ inputs.register_versions }}
+        run: |
+          operation=configure
+          if [[ "$REGISTER_VERSIONS" == false ]]; then operation=configure-release; fi
+          python3 ../_fern-shared/.github/actions/fern-docs/scripts/prepare.py "$operation" .
 
       - name: Register and prune frozen versions
         if: inputs.register_versions && steps.resolve.outputs.publish == 'true'
@@ -232,7 +242,7 @@ jobs:
         with:
           working-directory: source
           fern-cli-version: ${{ inputs.fern_cli_version }}
-          fern-docs-path: ${{ inputs.fern_docs_path }}
+          fern-docs-path: ${{ inputs.fern_docs_path && steps.config.outputs.docs_path || '' }}
           fern-organization: ${{ inputs.fern_organization }}
           docs-directory: ${{ inputs.docs_directory }}
           docs-paths: ${{ inputs.docs_paths || inputs.docs_directory }}

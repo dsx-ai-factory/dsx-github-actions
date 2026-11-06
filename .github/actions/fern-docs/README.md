@@ -119,7 +119,11 @@ Namespaces use lowercase letters, digits, and single hyphens between parts.
 Before publication, the workflow rejects an `ORG-preview-ID` label longer than
 62 characters, the truncation limit in Fern CLI 5.186.0. Shorten the namespace
 if necessary. Reusing the same namespace/repository/PR tuple updates that
-preview. The shared comment marker is `<!-- shared-fern-preview -->`.
+preview. The workflow rechecks the PR head immediately before writing its comment
+and skips that write if the PR has advanced. The shared comment marker is
+`<!-- shared-fern-preview -->`. If no shared comment exists, it updates an
+existing `github-actions[bot]` comment with the legacy `<!-- preview-docs -->`
+marker. Comments from other authors are never adopted.
 See [Fern's preview behavior](https://buildwithfern.com/learn/docs/preview-publish/preview-changes).
 
 The caller's `workflow_run` listener must exist on its default branch. A new
@@ -144,8 +148,8 @@ or manual dispatch on the caller's default branch. A manual dispatch from a
 feature branch is rejected. This gate does not protect against callers changing
 their own workflow code; retain normal branch and runner protections.
 Automatic stable publication requires a tag reachable from the caller's default
-branch. Automatic RC publication requires its matching release branch, as
-described below.
+branch or a matching RC commit on its release branch, as described below.
+Automatic RC publication requires its matching release branch.
 
 A manual dispatch with an explicit `tag` accepts `vMAJOR.MINOR.PATCH` with an
 optional pre-release or build suffix, such as `v1.16.0-rc.5`. The tag must be
@@ -172,11 +176,20 @@ publication. This requires `register_versions: false` and a tag reachable from
 `origin/release/MAJOR.MINOR.PATCH`. Automatic publication defaults to stable
 releases and skips other pre-release formats. Protect release branches and tags.
 
+With the same opt-in, automatic publication of a stable tag outside the default
+branch requires its commit to be reachable from `origin/release/MAJOR.MINOR.PATCH` and match
+a `vMAJOR.MINOR.PATCH-rc.N` tag. Annotated and lightweight tags are supported.
+These checks establish the trusted source commit. The caller's promotion process
+remains responsible for QA approval and artifact verification.
+
 RC publication updates the same site configured in the release's site YAML.
 It does not create a separate preview site. Selecting an older tag replaces newer
-content on that site. The release tree must contain the selected configuration
-path. With the default layout, `fern/fern.config.json` must match the CLI version.
-Backport caller and config changes to existing release branches before cutting a new RC there.
+content on that site. For an unversioned site, the configured `fern_docs_path`
+must exist on the default branch. If an older release tree lacks that file, the
+publisher uses the release's `fern/docs.yml` with the organization and CLI inputs.
+CI, previews, and version registration still require the configured path.
+With the default layout, `fern/fern.config.json` must match the CLI version.
+Backport caller changes to existing release branches before cutting a new RC there.
 
 ## Verification
 

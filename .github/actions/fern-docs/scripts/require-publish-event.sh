@@ -25,6 +25,22 @@ if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" == "refs/heads/
   if git merge-base --is-ancestor "refs/tags/${TAG_VERSION}" "$source_ref"; then
     exit 0
   fi
+  if [[ "$TAG_VERSION" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ &&
+        "${PUBLISH_RC:-false}" == true && "${REGISTER_VERSIONS:-true}" == false ]]; then
+    version="${BASH_REMATCH[1]}"
+    source_ref="refs/remotes/origin/release/${version}"
+    # Promotion retains the RC commit. Require both the matching release branch
+    # and an RC tag for this version, including annotated tags.
+    if git merge-base --is-ancestor "refs/tags/${TAG_VERSION}" "$source_ref"; then
+      stable_commit=$(git rev-parse --verify "refs/tags/${TAG_VERSION}^{commit}")
+      while IFS= read -r rc_tag; do
+        if [[ "$rc_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] &&
+           [[ "$(git rev-parse --verify "refs/tags/${rc_tag}^{commit}")" == "$stable_commit" ]]; then
+          exit 0
+        fi
+      done < <(git tag --list "v${version}-rc.*")
+    fi
+  fi
   echo "::error::Release tag must be reachable from ${source_ref}"
   exit 1
 fi

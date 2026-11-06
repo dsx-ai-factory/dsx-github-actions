@@ -43,7 +43,7 @@ def config_path(root, value):
     return path
 
 
-def configure(root, version, fern_working_directory='.', docs_path='', organization='nvidia'):
+def configure(root, version, fern_working_directory='.', docs_path='', organization='nvidia', *, legacy_release=False):
     if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?', version):
         raise ValueError('fern_cli_version must be an exact version')
     fern = relative_path(root, fern_working_directory) / 'fern'
@@ -56,7 +56,13 @@ def configure(root, version, fern_working_directory='.', docs_path='', organizat
     if not re.fullmatch(r'[A-Za-z0-9_-]+', organization):
         raise ValueError('fern_organization must be a Fern organization name')
     source = config_path(root, docs_path)
-    if source.suffix.lower() not in ('.yml', '.yaml') or not source.is_file():
+    if source.suffix.lower() not in ('.yml', '.yaml'):
+        raise ValueError('fern_docs_path must name an existing YAML file')
+    # The publisher checks the configured path on the default branch first.
+    # Older release trees can still keep their site YAML at the original path.
+    if legacy_release and not source.exists():
+        source = target
+    if not source.is_file():
         raise ValueError('fern_docs_path must name an existing YAML file')
     registry = config_path(root, (source.parent / 'versions').relative_to(root).as_posix())
     destination = config_path(root, (fern / 'versions').relative_to(root).as_posix())
@@ -161,7 +167,7 @@ def main():
     if sys.version_info < (3, 12):
         raise ValueError('Python 3.12 or newer is required')
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['check', 'stage', 'configure'])
+    parser.add_argument('operation', choices=['check', 'stage', 'configure', 'configure-release'])
     parser.add_argument('source', type=Path)
     parser.add_argument('--destination', type=Path)
     args = parser.parse_args()
@@ -175,8 +181,9 @@ def main():
         if args.destination is None:
             raise ValueError('Missing staging destination')
         stage(source, args.destination.absolute(), nav, docs, fern_docs_path=fern_docs_path)
-    elif args.operation == 'configure':
-        config, registry = configure(source, os.environ['FERN_CLI_VERSION'], fern_working_directory, fern_docs_path, organization)
+    elif args.operation in ('configure', 'configure-release'):
+        config, registry = configure(source, os.environ['FERN_CLI_VERSION'], fern_working_directory,
+                                     fern_docs_path, organization, legacy_release=args.operation == 'configure-release')
         if os.environ.get('GITHUB_OUTPUT'):
             with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
                 output.write(f'docs_path={config.relative_to(source).as_posix()}\n')

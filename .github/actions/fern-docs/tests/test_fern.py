@@ -88,6 +88,62 @@ class FernTest(unittest.TestCase):
         self.assertEqual((self.root / 'fern/docs.yml').read_bytes(),
                          (self.root / '.github/fern-docs.yml').read_bytes())
 
+    def test_only_release_configuration_accepts_the_legacy_path(self):
+        command = [sys.executable, str(SCRIPTS / 'prepare.py')]
+        env = {'FERN_DOCS_PATH': '.github/fern-docs.yml', 'FERN_CLI_VERSION': '5.65.2'}
+        output = self.root / 'github-output'
+        original = (self.root / 'fern/docs.yml').read_bytes()
+        for operation in ('check', 'configure'):
+            self.execute([*command, operation, '.'], False, **env)
+        self.execute([*command, 'configure-release', '.'], GITHUB_OUTPUT=str(output), **env)
+        self.assertEqual(output.read_text(), 'docs_path=fern/docs.yml\nversions_path=fern/versions\n')
+        self.assertEqual((self.root / 'fern/docs.yml').read_bytes(), original)
+        self.prepare(FERN_DOCS_PATH='fern/docs.yml', FERN_CLI_VERSION='5.65.2')
+        self.assertEqual(json.loads((self.root / 'fern/fern.config.json').read_text())['version'], '5.65.2')
+        self.write('.github/fern-docs.yml', 'navigation: []\n')
+        self.execute([*command, 'configure-release', '.'], **env)
+        self.assertEqual((self.root / 'fern/docs.yml').read_text(), 'navigation: []\n')
+
+    def test_legacy_release_fallback_rejects_invalid_paths(self):
+        command = [sys.executable, str(SCRIPTS / 'prepare.py'), 'configure-release', '.']
+        for path in ('../missing.yml', '.github/missing.txt', '.git/missing.yml'):
+            with self.subTest(path=path):
+                self.execute(command, False, FERN_DOCS_PATH=path)
+        (self.root / '.github').mkdir()
+        (self.root / '.github/fern-docs.yml').symlink_to('missing.yml')
+        self.execute(command, False, FERN_DOCS_PATH='.github/fern-docs.yml')
+        (self.root / '.github/fern-docs.yml').unlink()
+        (self.root / 'fern/docs.yml').unlink()
+        self.execute(command, False, FERN_DOCS_PATH='.github/fern-docs.yml')
+        (self.root / 'fern/docs.yml').symlink_to('../index.yml')
+        self.execute(command, False, FERN_DOCS_PATH='.github/fern-docs.yml')
+
+    def test_release_checkout_requires_the_configured_default_branch_path(self):
+        workflow = SCRIPTS.parents[2] / 'workflows/publish-fern-docs.yml'
+        step = self.execute([
+            'yq', '-r', '.jobs.publish.steps[] | select(.name == "Use the release tree for an unversioned site") | .run',
+            str(workflow),
+        ]).stdout
+        self.git('tag', 'v1.0.0')
+        self.move_config()
+        self.commit()
+        self.execute(['bash', '-euo', 'pipefail', '-c', step], False,
+                     TAG_VERSION='v1.0.0', FERN_DOCS_PATH='.github/misspelled.yml')
+        self.assertTrue((self.root / '.github/fern-docs.yml').exists())
+        self.execute(['bash', '-euo', 'pipefail', '-c', step],
+                     TAG_VERSION='v1.0.0', FERN_DOCS_PATH='.github/fern-docs.yml')
+        self.assertFalse((self.root / '.github/fern-docs.yml').exists())
+        self.assertTrue((self.root / 'fern/docs.yml').is_file())
+        config_step = self.execute([
+            'yq', '-r', '.jobs.publish.steps[] | select(.id == "config") | .run', str(workflow),
+        ]).stdout
+        (self.root.parent / '_fern-shared').symlink_to(SCRIPTS.parents[3], target_is_directory=True)
+        output = self.root / 'github-output'
+        self.execute(['bash', '-euo', 'pipefail', '-c', config_step],
+                     REGISTER_VERSIONS='false', GITHUB_OUTPUT=str(output))
+        paths = dict(line.split('=', 1) for line in output.read_text().splitlines())
+        self.prepare(FERN_DOCS_PATH=paths['docs_path'])
+
     def test_custom_configuration_requires_safe_paths_before_writing(self):
         self.move_config()
         for path in ['../outside.yml', '/tmp/outside.yml', '.git/config', '.github/missing.yml', 'docs/overview.md', '.github/fern-docs.yml\nextra=value']:
@@ -600,6 +656,99 @@ class FernTest(unittest.TestCase):
                 self.execute(['bash', str(SCRIPTS / 'require-publish-event.sh')], allowed,
                              GITHUB_EVENT_NAME=event, GITHUB_REF=ref, DEFAULT_BRANCH='master',
                              TAG_VERSION=tag, PUBLISH_RC=rc, REGISTER_VERSIONS=register)
+
+    def test_promoted_stable_requires_matching_rc_commit_and_release_branch(self):
+        self.git('update-ref', 'refs/remotes/origin/master', 'HEAD')
+        self.git('checkout', '-b', 'release/1.2.4')
+        self.write('docs/overview.md', '# Release-only fix\n')
+        self.commit()
+        self.git('update-ref', 'refs/remotes/origin/release/1.2.4', 'HEAD')
+        self.git('tag', '-a', 'v1.2.4-rc.1', '-m', 'RC')
+        self.git('tag', '-a', 'v1.2.4', '-m', 'Stable')
+        self.git('tag', 'v9.9.9-rc.1')
+        self.git('tag', 'v9.9.9')
+        env = {'DEFAULT_BRANCH': 'master', 'PUBLISH_RC': 'true', 'REGISTER_VERSIONS': 'false'}
+        command = ['bash', str(SCRIPTS / 'require-publish-event.sh')]
+        for event, ref, tag, rc, register, allowed in [
+            ('push', 'refs/tags/v1.2.4', 'v1.2.4', 'true', 'false', True),
+            ('release', 'refs/tags/v1.2.4', 'v1.2.4', 'true', 'false', True),
+            ('workflow_dispatch', 'refs/heads/master', 'v1.2.4', 'true', 'false', True),
+            ('push', 'refs/tags/v1.2.4', 'v1.2.4', 'false', 'false', False),
+            ('push', 'refs/tags/v1.2.4', 'v1.2.4', 'true', 'true', False),
+            ('push', 'refs/tags/v9.9.9', 'v9.9.9', 'true', 'false', False),
+            ('workflow_dispatch', 'refs/heads/release/1.2.4', 'v1.2.4', 'true', 'false', False),
+        ]:
+            with self.subTest(event=event, ref=ref, tag=tag, rc=rc, register=register):
+                self.execute(command, allowed, **(env | {
+                    'GITHUB_EVENT_NAME': event, 'GITHUB_REF': ref, 'TAG_VERSION': tag,
+                    'PUBLISH_RC': rc, 'REGISTER_VERSIONS': register}))
+        env.update(GITHUB_EVENT_NAME='push', GITHUB_REF='refs/tags/v1.2.4', TAG_VERSION='v1.2.4')
+        self.git('tag', '-d', 'v1.2.4-rc.1')
+        self.git('tag', 'v1.2.4-rc.not-a-number')
+        self.execute(command, False, **env)
+        self.git('tag', 'v1.2.4-rc.2')
+        self.execute(command, **env)
+        self.write('docs/overview.md', '# Not the RC commit\n')
+        self.commit()
+        self.git('update-ref', 'refs/remotes/origin/release/1.2.4', 'HEAD')
+        self.git('tag', '-f', 'v1.2.4')
+        self.execute(command, False, **env)
+        self.git('tag', '-f', 'v1.2.4-rc.2')
+        self.git('update-ref', 'refs/remotes/origin/release/1.2.4', 'HEAD~1')
+        self.execute(command, False, **env)
+
+    def test_preview_comment_rechecks_head_and_adopts_only_bot_comments(self):
+        workflow = SCRIPTS.parents[2] / 'workflows/fern-docs-preview-comment.yml'
+        step = self.execute([
+            'yq', '-r', '.jobs.preview.steps[] | select(.name == "Post or update PR comment") | .run',
+            str(workflow),
+        ]).stdout
+        self.write('bin/gh', '''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+route = next(arg for arg in args if arg.startswith('repos/'))
+if '--paginate' in args:
+    if '--slurp' in args and '--jq' in args:
+        sys.exit('gh does not support --slurp with --jq')
+    print(Path('comments.json').read_text())
+elif '/pulls/' in route:
+    if os.environ['CURRENT_HEAD'] == 'api-error':
+        sys.exit(1)
+    print(os.environ['CURRENT_HEAD'])
+else:
+    Path('write.json').write_text(json.dumps(args))
+''')
+        (self.root / 'bin/gh').chmod(0o755)
+        shared = {'id': 21, 'user': {'login': 'github-actions[bot]'}, 'body': '<!-- shared-fern-preview -->'}
+        legacy = {'id': 20, 'user': {'login': 'github-actions[bot]'}, 'body': '<!-- preview-docs -->'}
+        user = legacy | {'id': 19, 'user': {'login': 'contributor'}}
+        expected_head = 'a' * 40
+        for name, pages, head, target, ok in [
+            ('new', [[]], expected_head, 'issues/51/comments', True),
+            ('legacy', [[user], [legacy]], expected_head, 'issues/comments/20', True),
+            ('shared first', [[legacy], [shared]], expected_head, 'issues/comments/21', True),
+            ('other author', [[user]], expected_head, 'issues/51/comments', True),
+            ('advanced', [[shared]], 'b' * 40, None, True),
+            ('missing head', [[shared]], '', None, True),
+            ('API failure', [[shared]], 'api-error', None, False),
+        ]:
+            with self.subTest(name=name):
+                self.write('comments.json', json.dumps(pages))
+                written = self.root / 'write.json'
+                written.unlink(missing_ok=True)
+                self.execute(['bash', '-euo', 'pipefail', '-c', step], ok,
+                             PATH=str(self.root / 'bin') + os.pathsep + self.env['PATH'],
+                             REPO='example/identity', PR_NUMBER='51', RUN_HEAD_SHA=expected_head,
+                             CURRENT_HEAD=head, PREVIEW_URL='https://example.buildwithfern.com', PAGE_LINKS='')
+                if target is None:
+                    self.assertFalse(written.exists())
+                else:
+                    args = json.loads(written.read_text())
+                    self.assertIn('repos/example/identity/' + target, args)
+                    body = next(arg for arg in args if arg.startswith('body='))
+                    self.assertIn('<!-- shared-fern-preview -->', body)
+                    self.assertNotIn('<!-- preview-docs -->', body)
 
     def test_preview_page_links_escape_markdown_and_urls(self):
         spec = importlib.util.spec_from_file_location('page_links', SCRIPTS / 'page-links.py')
