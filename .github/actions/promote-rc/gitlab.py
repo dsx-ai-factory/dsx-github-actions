@@ -615,7 +615,8 @@ def promote_tag(config, gitlab, context, project, env, github, registry, report_
             config, wrapper["manifest"], github, registry,
             f"gitlab-{gitlab.gate['project_id']}-{context['job_id']}", report_path,
             source_publisher_sha=wrapper["source_publisher_sha"], producer=wrapper["producer"],
-            release_lifecycle=ArtifactOnlyLifecycle(gitlab, context, github))
+            release_lifecycle=ArtifactOnlyLifecycle(gitlab, context, github),
+            tag_object=context["tag_object"])
         return result
     finally:
         if report_path.exists():

@@ -189,6 +189,34 @@ class StableTagTests(unittest.TestCase):
             self.run_promotion(path)
             self.assertEqual(self.registry.writes, writes)
 
+    def test_initial_checkpoint_can_resume_without_finally_metadata(self):
+        class Interrupted(BaseException):
+            pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / gl.RESULT
+            checkpoint = None
+
+            def interrupt(*args):
+                nonlocal checkpoint
+                checkpoint = path.read_bytes()
+                raise Interrupted()
+
+            with patch.object(self.registry, "copy_image", side_effect=interrupt), \
+                    self.assertRaises(Interrupted):
+                self.run_promotion(path)
+            record = json.loads(checkpoint)
+            self.assertEqual(record["status"], "partial")
+            self.assertEqual(record["artifacts"], [])
+            self.assertEqual(record["tag_object"], self.object_sha)
+            self.assertNotIn("gitlab_approval", record)
+            # Retain only the checkpoint, as if the process never reached finally.
+            self.retain(path)
+            self.responses[f"{ROOT}/jobs/999/artifacts/{gl.RESULT}"] = checkpoint
+            result = self.run_promotion(path)
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["intent"]["producer"], self.wrapper["producer"])
+
     def test_conflicting_stable_artifact_is_never_overwritten(self):
         self.registry.images["service", "1.2.3"] = "sha256:" + "e" * 64
         with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(p.PromotionError, "different digest"):

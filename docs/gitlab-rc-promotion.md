@@ -24,6 +24,10 @@ The product's manual GitHub caller uses `promote-rc-tag.yml` at a reviewed commi
 ```yaml
 jobs:
   promote:
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
     uses: dsx-ai-factory/dsx-github-actions/.github/workflows/promote-rc-tag.yml@<reviewed-full-commit-sha>
     with:
       rc_version: ${{ inputs.rc_version }}
