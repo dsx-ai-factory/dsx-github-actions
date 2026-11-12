@@ -30,7 +30,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dcarbone/install-yq-action@64b1b9eb28920bb1a4c13c05321df284f9a8f940 # v1.1.1
+      - uses: dcarbone/install-yq-action@4075b4dca348d74bd83f2bf82d30f25d7c54539b # v1.3.1
       - name: Check the tool images used by the actions
         env:
           PLATFORM: ${{ matrix.platform }}
@@ -76,7 +76,7 @@ jobs:
           image: localbuild/tool-security:smoke
           fail-build: 'true'
           upload-sarif: 'false'
-      - uses: dcarbone/install-yq-action@64b1b9eb28920bb1a4c13c05321df284f9a8f940 # v1.1.1
+      - uses: dcarbone/install-yq-action@4075b4dca348d74bd83f2bf82d30f25d7c54539b # v1.3.1
       - name: Check digest-preserving multi-platform copy
         run: |
           docker buildx build --platform linux/amd64,linux/arm64 \
