@@ -78,8 +78,6 @@ rm -rf "$install_root"
 mkdir -p "$install_root"
 cp -R "$extract_dir"/. "$install_root/"
 
-# 5.1.5 fixes certifi for CVE-2026-111943, but its gRPC and botocore bundles still
-# carry the distrusted eMudhra roots; point both at the clean certifi bundle.
 certifi_bundle=$(find "$install_root" -path '*/certifi/cacert.pem' -print -quit)
 if [[ -z "$certifi_bundle" ]]; then
   log_error "Unable to find the NGC CLI certifi CA bundle"

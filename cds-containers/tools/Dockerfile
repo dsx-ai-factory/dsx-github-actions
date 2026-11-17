@@ -96,8 +96,6 @@ RUN curl -fsSL -o yq "https://github.com/mikefarah/yq/releases/download/v${YQ_VE
     && yq --version
 
 # ngccli
-# 5.1.5 fixes certifi for CVE-2026-111943, but its gRPC and botocore bundles still
-# carry the distrusted eMudhra roots; point both at the clean certifi bundle.
 ARG NGCCLI_VERSION="5.1.5"
 ARG NGCCLI_SHA256="e9a3e91cd0edfa1d249b1298bfe38828e7dd08387e66078af4658a49282c699d"
 RUN curl -fsSL -o ngccli_linux.zip "https://api.ngc.nvidia.com/v2/resources/nvidia/ngc-apps/ngc_cli/versions/${NGCCLI_VERSION}/files/ngccli_linux.zip" \
