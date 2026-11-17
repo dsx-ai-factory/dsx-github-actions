@@ -66,7 +66,7 @@ inputs:
     required: true
   ngccli-version:
     description: "NGC CLI version to install"
-    default: "4.9.17"
+    default: "5.1.5"
     required: false
   ngccli-sha256:
     description: "Expected SHA256 for a non-default NGC CLI version on the runner architecture"

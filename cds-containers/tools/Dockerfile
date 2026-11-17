@@ -96,12 +96,16 @@ RUN curl -fsSL -o yq "https://github.com/mikefarah/yq/releases/download/v${YQ_VE
     && yq --version
 
 # ngccli
-ARG NGCCLI_VERSION="4.17.0"
-ARG NGCCLI_SHA256="43a28b1b004c07c8e2db08595b3d5b9d4ddc496e81ef1f6b25eca8d3c79fedc6"
+# 5.1.5 fixes certifi for CVE-2026-111943, but its gRPC and botocore bundles still
+# carry the distrusted eMudhra roots; point both at the clean certifi bundle.
+ARG NGCCLI_VERSION="5.1.5"
+ARG NGCCLI_SHA256="e9a3e91cd0edfa1d249b1298bfe38828e7dd08387e66078af4658a49282c699d"
 RUN curl -fsSL -o ngccli_linux.zip "https://api.ngc.nvidia.com/v2/resources/nvidia/ngc-apps/ngc_cli/versions/${NGCCLI_VERSION}/files/ngccli_linux.zip" \
     && printf '%s  %s\n' "$NGCCLI_SHA256" ngccli_linux.zip | sha256sum -c - \
     && unzip ngccli_linux.zip \
     && rm ngccli_linux.zip \
+    && cp /ngc-cli/_internal/certifi/cacert.pem /ngc-cli/_internal/grpc/_cython/_credentials/roots.pem \
+    && cp /ngc-cli/_internal/certifi/cacert.pem /ngc-cli/_internal/botocore/cacert.pem \
     && ln -s /ngc-cli/ngc /usr/local/bin/ngc \
     && ngc version info
 

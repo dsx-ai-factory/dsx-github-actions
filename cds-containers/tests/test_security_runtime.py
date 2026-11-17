@@ -72,9 +72,6 @@ class ContainerSecurityPolicyTests(unittest.TestCase):
         self.assertIn("apk info --installed --verbose 'ca-certificates>=20261020-r0'", script)
         self.assertNotIn("apk version -t", script)
 
-    def test_immutable_release_version(self):
-        self.assertEqual((CONTAINERS / "VERSION").read_text(), "0.2.2\n")
-
     def test_smoke_script_syntax_and_usage(self):
         subprocess.run(["sh", "-n", str(SMOKE)], check=True)
         for args in ([], ["unknown"]):

@@ -29,6 +29,7 @@ on:
       - '.github/scripts/prepare-image-attestation.sh'
       - '.github/scripts/promote-attested-image.sh'
       - '.github/scripts/check_cds_tags.py'
+      - '.github/scripts/check_ca_bundles.py'
   workflow_dispatch:
 
 concurrency:
@@ -196,6 +197,10 @@ jobs:
           IMAGE: ${{ steps.test-image.outputs.image }}
         run: |
           docker run --rm -i "$IMAGE" sh -s -- tools < cds-containers/tests/security-runtime.sh
+          docker run --rm -i --entrypoint python3 "$IMAGE" - \
+            /ngc-cli/_internal/certifi/cacert.pem \
+            /ngc-cli/_internal/grpc/_cython/_credentials/roots.pem \
+            /ngc-cli/_internal/botocore/cacert.pem < .github/scripts/check_ca_bundles.py
 
       - name: Record tested digest and evidence ID
         if: needs.get-version.outputs.publish == 'true'

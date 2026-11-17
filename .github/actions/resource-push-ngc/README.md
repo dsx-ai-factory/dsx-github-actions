@@ -29,7 +29,7 @@ jobs:
           ngc-path: myorg/myteam
           ngc-key: ${{ secrets.NGC_API_KEY }}
           ngc-force: overwrite
-          ngccli-version: 4.9.17
+          ngccli-version: 5.1.5
 ```
 
 The default NGC CLI version has NVIDIA-published checksums built into the
@@ -54,7 +54,7 @@ checksum is available.
 | `path`           | Yes      | —                   | File or directory to upload                                      |
 | `precision`      | No       | `OTHER`             | Resource precision                                               |
 | `version`        | Yes      | —                   | Resource version                                                 |
-| `ngccli-version` | No       | `4.9.17`            | NGC CLI version to install                                       |
+| `ngccli-version` | No       | `5.1.5`             | NGC CLI version to install                                       |
 | `ngccli-sha256`  | No       | empty               | Expected archive SHA256; required for non-default CLI versions   |
 
 ## Outputs
