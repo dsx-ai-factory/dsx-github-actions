@@ -83,8 +83,12 @@ if [[ -z "$certifi_bundle" ]]; then
   log_error "Unable to find the NGC CLI certifi CA bundle"
   exit 1
 fi
-find "$install_root" \( -path '*/grpc/_cython/_credentials/roots.pem' -o -path '*/botocore/cacert.pem' \) \
-  -exec cp "$certifi_bundle" {} \;
+bundle_root=$(dirname "$(dirname "$certifi_bundle")")
+for stale_bundle in "$bundle_root/grpc/_cython/_credentials/roots.pem" "$bundle_root/botocore/cacert.pem"; do
+  if [[ -f "$stale_bundle" ]]; then
+    cp "$certifi_bundle" "$stale_bundle"
+  fi
+done
 
 bin_path="$install_root/ngc"
 if [[ ! -f "$bin_path" ]]; then
