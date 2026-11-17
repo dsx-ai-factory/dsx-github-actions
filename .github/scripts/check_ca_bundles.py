@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Fail if a PEM CA bundle trusts a root distrusted for CVE-2026-111943 (eMudhra)."""
+"""Fail if a PEM CA bundle trusts a distrusted root certificate."""
 
 import hashlib
 import re
@@ -10,6 +10,7 @@ import sys
 
 # SHA-256 fingerprints of the DER certificates, so stripped labels cannot hide them.
 DISTRUSTED = {
+    # CVE-2026-111943 (eMudhra)
     "d7a7a0fb5d7e2731d771e9484ebcdef71d5f0c3e0a2948782bc83ee0ea699ef4": "AAA Certificate Services",
     "86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b": "emSign ECC Root CA - G3",
 }

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Install the NGC CLI with each runner installer and check that none of its CA
-# bundles trusts a root distrusted for CVE-2026-111943.
+# bundles trusts a distrusted root (see check_ca_bundles.py).
 
 set -euo pipefail
 
