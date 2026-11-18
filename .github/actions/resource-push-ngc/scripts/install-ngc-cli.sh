@@ -30,7 +30,7 @@ if command -v ngc >/dev/null 2>&1; then
   exit 0
 fi
 
-NGCCLI_VERSION="${NGCCLI_VERSION:-4.9.17}"
+NGCCLI_VERSION="${NGCCLI_VERSION:-5.1.5}"
 
 # NGC ships a separate CLI build per architecture. ngccli_linux.zip is x86_64-only —
 # running it on an arm64 runner fails with "cannot execute binary file: Exec format error",
@@ -42,11 +42,11 @@ case "$(uname -m)" in
 esac
 
 case "${NGCCLI_VERSION}:${ngc_cli_file}" in
-  4.9.17:ngccli_linux.zip)
-    expected_sha256="b1cc4299151cdcbc2bd18318c0a3b7f321f3e62e20ba234b6a8a0e7024cf3b44"
+  5.1.5:ngccli_linux.zip)
+    expected_sha256="e9a3e91cd0edfa1d249b1298bfe38828e7dd08387e66078af4658a49282c699d"
     ;;
-  4.9.17:ngccli_arm64.zip)
-    expected_sha256="7945c17290b0bb4003b01065149a4d2f254335e56037b16d9417c1aec566e60c"
+  5.1.5:ngccli_arm64.zip)
+    expected_sha256="f1f5e1ad0e468609c375b3672475da998cf14bbc55b22327d374f57cbdbdb20c"
     ;;
   *)
     expected_sha256="${NGCCLI_SHA256:-}"
@@ -77,6 +77,18 @@ install_root="$HOME/.local/ngc-cli"
 rm -rf "$install_root"
 mkdir -p "$install_root"
 cp -R "$extract_dir"/. "$install_root/"
+
+certifi_bundle=$(find "$install_root" -path '*/certifi/cacert.pem' -print -quit)
+if [[ -z "$certifi_bundle" ]]; then
+  log_error "Unable to find the NGC CLI certifi CA bundle"
+  exit 1
+fi
+bundle_root=$(dirname "$(dirname "$certifi_bundle")")
+for stale_bundle in "$bundle_root/grpc/_cython/_credentials/roots.pem" "$bundle_root/botocore/cacert.pem"; do
+  if [[ -f "$stale_bundle" ]]; then
+    cp "$certifi_bundle" "$stale_bundle"
+  fi
+done
 
 bin_path="$install_root/ngc"
 if [[ ! -f "$bin_path" ]]; then
