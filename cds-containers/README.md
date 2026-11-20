@@ -16,7 +16,7 @@ Comprehensive tooling for infrastructure automation, CI/CD, and Kubernetes opera
 **Includes**:
 - **Bazel** (multiple versions):
   - `bazel6` - Bazel 6.5.0 (for KubeVirt compatibility)
-  - `bazel8` - Bazel 8.8.2
+  - `bazel8` - Bazel 8.9.0
   - `bazel` - Default symlink (→ bazel8)
 - **Kubernetes**: kubectl, kubelogin, helm
 - **Infrastructure**: terraform, terragrunt
@@ -348,11 +348,11 @@ steps:
   - name: Build with Bazel 6
     run: bazel6 build //...
 
-  # Use Bazel 8.8.2 explicitly
+  # Use Bazel 8.9.0 explicitly
   - name: Build with Bazel 8
     run: bazel8 build //...
 
-  # Use default (currently Bazel 8.8.2)
+  # Use default (currently Bazel 8.9.0)
   - name: Build with default Bazel
     run: bazel build //...
 ```
