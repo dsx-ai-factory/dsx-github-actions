@@ -177,9 +177,9 @@ RUN curl -fsSL -o bazel6 "https://github.com/bazelbuild/bazel/releases/download/
     && ln -s /usr/local/bin/bazel-${BAZEL6_VERSION} /usr/local/bin/bazel6 \
     && bazel6 --version
 
-# Bazel 8.8.2 is the default and includes a patched bundled JDK trust store.
-ARG BAZEL8_VERSION="8.8.2"
-ARG BAZEL8_SHA256="bf463ba0f5f782e8fe31071bd2b821c2f6a27f03e5bb62f0879e88cbf3656e04"
+# Bazel 8.9.0 is the default and includes a patched bundled JDK trust store.
+ARG BAZEL8_VERSION="8.9.0"
+ARG BAZEL8_SHA256="bc4b5efbaf8b1d85913fb0e6873e40e4d9b33244d30cbbbbcd1b7835d940f8fa"
 RUN curl -fsSL -o bazel8 "https://github.com/bazelbuild/bazel/releases/download/${BAZEL8_VERSION}/bazel-${BAZEL8_VERSION}-linux-x86_64" \
     && printf '%s  %s\n' "$BAZEL8_SHA256" bazel8 | sha256sum -c - \
     && mv bazel8 /usr/local/bin/bazel-${BAZEL8_VERSION} \
