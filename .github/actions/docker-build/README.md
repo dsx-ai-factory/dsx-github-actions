@@ -69,9 +69,13 @@ steps:
 ### Configure scan exceptions
 
 Set `security-scan-config` to a Grype YAML config file in the caller checkout.
-Relative paths resolve from the caller working directory. The action copies the
-file and mounts it read-only for every platform scan. Missing, unreadable, or
-invalid files fail the scan. An empty input uses Grype defaults.
+Relative paths resolve from the caller working directory. After symlinks are
+resolved, the file must be inside `GITHUB_WORKSPACE`. It must be a single YAML
+document whose only top-level key is `ignore`; settings such as `db` or `registry`
+are rejected, so a config cannot change where Grype gets its data or how it
+authenticates. The action installs `yq` when the runner lacks it, copies the file,
+and mounts it read-only for every platform scan. Missing, unreadable, misplaced,
+or invalid files fail the scan. An empty input uses Grype defaults.
 
 ```yaml
 - uses: dsx-ai-factory/dsx-github-actions/.github/actions/docker-build@<commit-sha>
@@ -241,7 +245,7 @@ copying the example's `main` policy for a tag-based release.
 | `sbom` | SBOM setting (empty uses docker default) | No | `""` |
 | `security-scan-enabled` | If `true`, build once to OCI, scan every requested Linux platform, then optionally publish the same digest | No | `false` |
 | `security-scan-fail-on-critical` | If `true`, fail when Critical vulnerabilities are found | No | `true` |
-| `security-scan-config` | Path to a Grype config file, used when scanning is enabled | No | `""` |
+| `security-scan-config` | Path to a Grype config file inside the caller workspace that contains only `ignore` rules, used when scanning is enabled | No | `""` |
 | `prepare-attestation` | Generate SBOMs independently of scanning; when pushing, publish only a candidate for `attest-image.yml` | No | `false` |
 
 ## Outputs

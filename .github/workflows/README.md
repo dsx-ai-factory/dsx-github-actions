@@ -262,7 +262,7 @@ jobs:
 
 - `security_scan_enabled`: If true, builds one local OCI artifact for all requested Linux platforms, scans each platform with Syft/Grype, and publishes that same artifact only when the scan policy passes and `push` is true.
 - `security_scan_fail_on_critical`: If true, fails the workflow when Critical vulnerabilities are found. Scan tool failures always fail and prevent pushing.
-- `security_scan_config`: Optional Grype config file path in the caller checkout. Missing or invalid files fail scanning. See the [scan exception example](../actions/docker-build/README.md#configure-scan-exceptions).
+- `security_scan_config`: Optional Grype config file path in the caller checkout. The file must stay inside the workspace and may only contain `ignore` rules. Missing or invalid files fail scanning. See the [scan exception example](../actions/docker-build/README.md#configure-scan-exceptions).
 
 ## Release Workflow (`release.yml`)
 

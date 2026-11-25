@@ -102,7 +102,7 @@ on:
         default: true
         type: boolean
       security_scan_config:
-        description: "Path to a Grype config file in the caller checkout. Used when scanning is enabled."
+        description: "Path to a Grype config file in the caller checkout. It may only contain ignore rules. Used when scanning is enabled."
         required: false
         default: ""
         type: string

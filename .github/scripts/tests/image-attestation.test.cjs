@@ -61,6 +61,8 @@ if (args[0] === 'buildx') {
   }
   process.exit(0);
 }
+const configVolume = args.find(a => a.endsWith(':/grype.yaml:ro'));
+if (configVolume) fs.copyFileSync(configVolume.slice(0, -':/grype.yaml:ro'.length), path.join(path.dirname(process.env.COMMANDS), 'grype-mounted.yaml'));
 const reportVolume = args.find(a => a.endsWith(':/reports'));
 const reportDir = reportVolume.slice(0, -':/reports'.length);
 if (args.includes('syft-test')) {
@@ -95,7 +97,7 @@ if (args.includes('syft-test')) {
     COMMANDS: path.join(dir, 'commands'), EXPECTED: path.join(dir, 'expected.json'),
     MANIFEST: path.join(dir, 'manifest.json'),
   };
-  const run = (script, overrides = {}) => spawnSync('bash', [script], { env: { ...env, ...overrides }, encoding: 'utf8' });
+  const run = (script, overrides = {}, options = {}) => spawnSync('bash', [script], { env: { ...env, ...overrides }, encoding: 'utf8', ...options });
   const commands = () => fs.existsSync(env.COMMANDS)
     ? fs.readFileSync(env.COMMANDS, 'utf8').trim().split('\n').map(JSON.parse) : [];
   const generate = () => {
@@ -203,6 +205,122 @@ for (const [name, config] of [
     assert.match(result.stderr, /Grype config must be a readable file/);
   });
 }
+
+// A caller checkout plus a sibling directory that the scan must never read.
+function grypeWorkspace(f, content = 'ignore: []\n') {
+  const workspace = path.join(f.dir, 'workspace');
+  const outside = path.join(f.dir, 'outside');
+  fs.mkdirSync(path.join(workspace, '.github'), { recursive: true });
+  fs.mkdirSync(outside);
+  const inside = path.join(workspace, '.github', 'grype.yaml');
+  const secret = path.join(outside, 'grype.yaml');
+  fs.writeFileSync(inside, content);
+  fs.writeFileSync(secret, content);
+  return { workspace, inside, secret };
+}
+const grypeScans = f => f.commands().filter(c => c.includes('grype-test'));
+const mountedConfig = f => path.join(f.dir, 'grype-mounted.yaml');
+
+test('scan mounts a read-only snapshot of an ignore-only Grype config from the workspace', t => {
+  const f = fixture(t);
+  f.generate();
+  const rules = 'ignore:\n  - vulnerability: GO-2026-0001\n    package:\n      name: example.com/lib\n';
+  const w = grypeWorkspace(f, rules);
+  const result = f.run(path.join(buildScripts, 'scan-oci.sh'), { GITHUB_WORKSPACE: w.workspace, SCAN_CONFIG: w.inside });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.readFileSync(mountedConfig(f), 'utf8'), rules);
+  assert.equal(grypeScans(f).length, 2);
+  for (const scan of grypeScans(f)) {
+    assert.ok(scan.some(arg => arg.endsWith(':/grype.yaml:ro')), 'config must be mounted read-only');
+    assert.equal(scan[scan.indexOf('--config') + 1], '/grype.yaml');
+  }
+});
+
+test('scan resolves a relative Grype config from the caller working directory', t => {
+  const f = fixture(t);
+  f.generate();
+  const w = grypeWorkspace(f);
+  const result = f.run(path.join(buildScripts, 'scan-oci.sh'),
+    { GITHUB_WORKSPACE: w.workspace, SCAN_CONFIG: '.github/grype.yaml' }, { cwd: w.workspace });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(grypeScans(f).length, 2);
+});
+
+test('scan requires the workspace before it reads a Grype config', t => {
+  const f = fixture(t);
+  f.generate();
+  const w = grypeWorkspace(f);
+  const result = f.run(path.join(buildScripts, 'scan-oci.sh'), { GITHUB_WORKSPACE: '', SCAN_CONFIG: w.inside });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /GITHUB_WORKSPACE/);
+  assert.equal(grypeScans(f).length, 0);
+  assert.ok(!fs.existsSync(mountedConfig(f)));
+});
+
+for (const [name, locate] of [
+  ['an absolute path outside the workspace', w => w.secret],
+  ['a relative path that leaves the workspace', w => `${w.workspace}/../outside/grype.yaml`],
+  ['a symlink to a file outside the workspace', w => {
+    const link = path.join(w.workspace, '.github', 'linked.yaml');
+    fs.symlinkSync(w.secret, link);
+    return link;
+  }],
+  ['a sibling directory that shares the workspace name prefix', w => {
+    const sibling = `${w.workspace}-other`;
+    fs.mkdirSync(sibling);
+    fs.writeFileSync(path.join(sibling, 'grype.yaml'), 'ignore: []\n');
+    return path.join(sibling, 'grype.yaml');
+  }],
+]) {
+  test(`scan rejects a Grype config from ${name}`, t => {
+    const f = fixture(t);
+    f.generate();
+    const w = grypeWorkspace(f);
+    const result = f.run(path.join(buildScripts, 'scan-oci.sh'), { GITHUB_WORKSPACE: w.workspace, SCAN_CONFIG: locate(w) });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Grype config must be inside the workspace/);
+    assert.equal(grypeScans(f).length, 0);
+    assert.ok(!fs.existsSync(mountedConfig(f)), 'the outside file must not be copied or mounted');
+  });
+}
+
+for (const [name, content] of [
+  ['database settings', 'db:\n  update-url: https://example.invalid/databases\n'],
+  ['database settings beside ignore rules', 'ignore: []\ndb:\n  auto-update: false\n'],
+  ['registry settings', 'registry:\n  insecure-use-http: true\n'],
+  ['JSON-style settings', '{"db": {"auto-update": false}}\n'],
+  ['a quoted settings key', '"db":\n  auto-update: false\n'],
+  ['an upper-case settings key', 'DB:\n  auto-update: false\n'],
+  ['an inline merge key', '<<: {db: {update-url: https://example.invalid/databases}}\nignore: []\n'],
+  ['an alias merge key', 'ignore:\n  - &x {db: {update-url: https://example.invalid/databases}}\n<<: *x\n'],
+  ['a second document', 'ignore: []\n---\ndb: {}\n'],
+  ['a list document', '- ignore\n'],
+  ['an empty file', ''],
+  ['ignore that is not a list', 'ignore: all\n'],
+  ['invalid YAML', 'ignore: [\n'],
+]) {
+  test(`scan rejects a Grype config with ${name}`, t => {
+    const f = fixture(t);
+    f.generate();
+    const w = grypeWorkspace(f, content);
+    const result = f.run(path.join(buildScripts, 'scan-oci.sh'), { GITHUB_WORKSPACE: w.workspace, SCAN_CONFIG: w.inside });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /contains only ignore rules/);
+    assert.equal(grypeScans(f).length, 0);
+    assert.ok(!fs.existsSync(mountedConfig(f)), 'a rejected config must not be mounted');
+  });
+}
+
+test('scan fails closed when yq is not the expected implementation', t => {
+  const f = fixture(t);
+  f.generate();
+  fs.writeFileSync(path.join(f.dir, 'bin', 'yq'), '#!/usr/bin/env bash\necho "yq 3.4.3"\n', { mode: 0o755 });
+  const w = grypeWorkspace(f);
+  const result = f.run(path.join(buildScripts, 'scan-oci.sh'), { GITHUB_WORKSPACE: w.workspace, SCAN_CONFIG: w.inside });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /mikefarah yq is required/);
+  assert.equal(grypeScans(f).length, 0);
+});
 
 test('promotion preserves single-manifest digests', t => {
   const f = fixture(t, ['amd64'], true);
