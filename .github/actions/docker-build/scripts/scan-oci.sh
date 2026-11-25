@@ -28,8 +28,20 @@ container=(docker run --rm --user "$(id -u):$(id -g)"
 config_args=()
 if [[ -n "${SCAN_CONFIG:-}" ]]; then
   [[ -f "$SCAN_CONFIG" && -r "$SCAN_CONFIG" ]] || fail 'Grype config must be a readable file'
+  : "${GITHUB_WORKSPACE:?}"
+  # Resolve symlinks and ".." before comparing: the config must come from the caller checkout.
+  workspace="$(realpath -- "$GITHUB_WORKSPACE")" || fail 'Cannot resolve the workspace'
+  config_source="$(realpath -- "$SCAN_CONFIG")" || fail 'Cannot resolve the Grype config'
+  [[ "$config_source" == "$workspace"/* ]] || fail 'Grype config must be inside the workspace'
   # Snapshot caller policy once so every platform uses the same configuration.
-  cp -- "$SCAN_CONFIG" "$tool_tmp/grype.yaml"
+  cp -- "$config_source" "$tool_tmp/grype.yaml"
+  # Callers may add ignore rules, but settings such as db.* or registry.* must stay with the action.
+  # List the parsed key nodes: yq's JSON view hides merge keys ("<<") that Grype still applies.
+  yq_version="$(yq --version 2>&1)" || fail 'mikefarah yq is required to validate the Grype config'
+  [[ "$yq_version" == *mikefarah* ]] || fail 'mikefarah yq is required to validate the Grype config'
+  yq -o=json -I0 '{"kind": kind, "keys": ((select(kind == "map") | keys) // []), "ignore": ((select(kind == "map") | .ignore | tag) // "")}' "$tool_tmp/grype.yaml" \
+    | jq -s -e 'length == 1 and .[0].kind == "map" and ((.[0].keys - ["ignore"]) | length == 0) and (.[0].ignore | IN("!!seq", "!!null"))' >/dev/null \
+    || fail 'Grype config must be one YAML document that contains only ignore rules'
   container+=(--volume "$tool_tmp/grype.yaml:/grype.yaml:ro")
   config_args=(--config /grype.yaml)
 fi

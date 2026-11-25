@@ -102,7 +102,7 @@ inputs:
     required: false
     default: "true"
   security-scan-config:
-    description: "Path to a Grype config file, relative to the caller working directory or absolute. Used when scanning is enabled."
+    description: "Path to a Grype config file, relative to the caller working directory. The file must be inside the caller workspace and may only contain ignore rules. Used when scanning is enabled."
     required: false
     default: ""
   prepare-attestation:
@@ -246,6 +246,9 @@ runs:
         SYFT_IMAGE: anchore/syft:v1.56.0@sha256:697ae864af1299cfa43c54b161cea3dd65c6d54de82e3dba66ea3dccb3acc313
       run: |
         bash "$GITHUB_ACTION_PATH/scripts/sbom-oci.sh"
+
+    - uses: dcarbone/install-yq-action@4075b4dca348d74bd83f2bf82d30f25d7c54539b # v1.3.1
+      if: inputs.security-scan-enabled == 'true' && inputs.security-scan-config != ''
 
     - name: Scan all platforms
       id: scan
